@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PDFree — Every PDF tool. Free forever.</title>
+<title>PDFree-One — Every PDF tool. Free forever.</title>
 <meta name="description" content="A complete, free PDF toolkit: merge, split, edit, convert, compress, OCR, secure and chat with PDF files — all processed locally in your browser.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f46e5'/%3E%3Cpath d='M18 10h20l10 10v34a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4z' fill='%23fff' opacity='.92'/%3E%3Cpath d='M38 10v10h10' fill='%23c7d2fe'/%3E%3Cpath d='M23 38l6 6 12-14' stroke='%234f46e5' stroke-width='4.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>/* ============ PDFree design system ============ */
@@ -399,7 +399,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
     <button class="icon-btn" id="menuBtn" aria-label="Menu"></button>
     <a class="brand" href="#/">
       <span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m9 15 2 2 4-4"/></svg></span>
-      PDFree <small>100% FREE</small>
+      PDFree-One <small>100% FREE</small>
     </a>
     <nav class="nav" id="mainNav" aria-label="Main"></nav>
     <div class="grow"></div>
@@ -409,7 +409,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 </header>
 <aside id="drawer" aria-label="Mobile navigation"></aside>
 <main id="main"></main>
-<footer class="site"><div class="in" id="footerCols"></div><div class="footer-bottom">PDFree — a 100% free, open PDF platform. All processing happens locally in your browser; your files never leave your device. · <a href="privacy-policy.html" style="display:inline;color:inherit;text-decoration:underline">Privacy Policy</a></div></footer>
+<footer class="site"><div class="in" id="footerCols"></div><div class="footer-bottom">PDFree-One — a 100% free, open PDF platform. All processing happens locally in your browser; your files never leave your device. · <a href="privacy-policy.html" style="display:inline;color:inherit;text-decoration:underline">Privacy Policy</a></div></footer>
 <div class="toast-wrap" id="toasts"></div>
 <div id="modal-root"></div>
 <input type="file" id="hidden-file-input" class="hidden">
@@ -3095,7 +3095,7 @@ const DocxW = {
     zip.file('word/styles.xml', stylesXml);
     zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:title>${DocxW.esc(o.title)}</dc:title><dc:creator>PDFree</dc:creator>
+<dc:title>${DocxW.esc(o.title)}</dc:title><dc:creator>PDFree-One</dc:creator>
 </cp:coreProperties>`);
     const blob = await zip.generateAsync({type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', compression: 'DEFLATE'});
     return blob;
@@ -4472,7 +4472,7 @@ registerTool({
     const bytesOut = await bakeOverlayPdf(uiState.bytes, ed, prog, 'Rasterizing redacted pages…');
     const out = await PdfL.load(bytesOut);
     out.setTitle(''); out.setAuthor(''); out.setSubject(''); out.setKeywords([]);
-    out.setProducer('PDFree'); out.setCreator('');
+    out.setProducer('PDFree-One'); out.setCreator('');
     const clean = await out.save();
     prog.set(94, 'Verifying redacted text is gone…');
     const check = await PdfX.load(clean);
@@ -4501,7 +4501,7 @@ registerTool({
    PDFree — Category C: Convert PDF (PDF→*, *→PDF)
    ================================================================ */
 
-const PDF_LANGS_NOTE = 'Converted with PDFree — all processing happened locally in your browser.';
+const PDF_LANGS_NOTE = 'Converted with PDFree-One — all processing happened locally in your browser.';
 
 /* shared: extract per-page structured text (lines + headings) */
 async function extractDocStructure(bytes, prog){
@@ -4647,7 +4647,7 @@ registerTool({
     const first = await PdfX.pageSize(doc, 1);
     pptx.defineLayout({name: 'PDFREE', width: first.w / 72, height: first.h / 72});
     pptx.layout = 'PDFREE';
-    pptx.author = 'PDFree'; pptx.company = 'PDFree'; pptx.title = U.baseName(files[0].name);
+    pptx.author = 'PDFree-One'; pptx.company = 'PDFree-One'; pptx.title = U.baseName(files[0].name);
     const dpi = parseInt(opts.dpi) || 150;
     for(let i = 1; i <= n; i++){
       prog.check();
@@ -5169,9 +5169,10 @@ async function runOcr(doc, pages, lang, prog, dpi){
     prog.check();
     prog._pct = 10 + i / pages.length * 85;
     prog.set(prog._pct, `OCR page ${pages[i]} / ${doc.numPages}…`);
-    const c = await PdfX.renderPage(doc, pages[i], document.createElement('canvas'), (dpi || 180) / 72, 0, 2600);
+    const c = await PdfX.renderPage(doc, pages[i], document.createElement('canvas'), (dpi || 300) / 72, 0, 3400);
     // erase table ruling lines first — Tesseract otherwise skips ruled tables as line-art
-    const oc = (typeof OcrTables !== 'undefined' && OcrTables.eraseRulingLines) ? OcrTables.eraseRulingLines(c) : c;
+    let oc = (typeof OcrTables !== 'undefined' && OcrTables.eraseRulingLines) ? OcrTables.eraseRulingLines(c) : c;
+    if(typeof OcrTables !== 'undefined' && OcrTables.enhanceForOcr) oc = OcrTables.enhanceForOcr(oc);
     const {data} = await worker.recognize(oc, {}, {text: true, blocks: true});
     let words = [];
     try{
@@ -5272,8 +5273,8 @@ registerTool({
   netNote: 'The Tesseract engine and the language pack for your first language are downloaded once from a CDN and cached by the browser. Recognition itself runs on this device; the images are never uploaded.',
   options: [
     {k: 'lang', label: 'Recognition language', type: 'select', default: Store.get('ocrLang', 'eng'), options: OCR_LANGS},
-    {k: 'quality', label: 'OCR quality', type: 'select', default: '180', options: [
-      {v: '150', l: 'Fast (150 DPI)'}, {v: '180', l: 'Balanced (180 DPI)'}, {v: '260', l: 'Accurate (260 DPI, slower)'}]},
+    {k: 'quality', label: 'OCR quality', type: 'select', default: '300', options: [
+      {v: '150', l: 'Fast (150 DPI)'}, {v: '180', l: 'Balanced (180 DPI)'}, {v: '260', l: 'Accurate (260 DPI, slower)'}, {v: '300', l: 'Best — recommended (300 DPI, slower)'}]},
     {k: 'pageLimit', label: 'Max pages (0 = all)', type: 'number', default: 30, min: 0, hint: 'OCR is compute-heavy; limit pages on long scans for a first pass'},
   ],
   steps: ['Upload a scanned PDF', 'Pick the language', 'Get a searchable PDF + extracted text'],
@@ -5489,8 +5490,8 @@ registerTool({
     const dpi = parseInt(opts.dpi) || 200;
     const out = await PdfL.create();
     out.setTitle(U.baseName(files[0].name));
-    out.setProducer('PDFree PDF/A converter');
-    out.setCreator('PDFree');
+    out.setProducer('PDFree-One PDF/A converter');
+    out.setCreator('PDFree-One');
     out.setCreationDate(new Date());
     out.setLanguage && out.setLanguage('en-US');
     for(let i = 1; i <= n; i++){
@@ -5831,7 +5832,7 @@ registerTool({
     }
     // strip metadata
     out.setTitle(''); out.setAuthor(''); out.setSubject(''); out.setKeywords([]);
-    out.setCreator(''); out.setProducer('PDFree');
+    out.setCreator(''); out.setProducer('PDFree-One');
     const clean = await out.save();
     // whole-document verification
     prog.set(92, 'Verifying the full output…');
@@ -7663,14 +7664,29 @@ const OcrTables = {
     const tables = Tables.detect(items, {minCols: o.minCols, minRows: o.minRows});
     for(const t of tables){
       if(!t.rows || t.rows.length < o.minRows) continue;
-      const rowsT = Tables.trimRaggedRows(t.rows, o.minCols);
+      let rowsT = Tables.trimRaggedRows(t.rows, o.minCols);
+      // drop a leading row that is really prose (a sentence wrapped across the
+      // column anchors): its word counts vary strongly across cells AND vary
+      // more than the next row's — real rows are word-consistent
+      const wc = r2 => r2.map(v => String(v == null ? '' : v).trim().split(/\s+/).filter(Boolean).length);
+      const isProseLead = (r2, r3) => {
+        if(!r3) return false;
+        const a = wc(r2), b = wc(r3);
+        return Math.max(...a) - Math.min(...a) >= 2 && Math.max(...a) >= 3 && Math.max(...a) > Math.max(...b);
+      };
+      let guard = 0;
+      while(rowsT.length > o.minRows && isProseLead(rowsT[0], rowsT[1]) && guard < 1){ rowsT = rowsT.slice(1); guard++; }
+      guard; // rows trimmed -> bbox shrinks accordingly
       if(rowsT.length < o.minRows) continue;
       const inside = items.filter(it => it.y >= t.y0 - 2 && it.y <= t.y1 + 2);
       if(!inside.length) continue;
+      // if prose rows were trimmed, the table's usable area starts below them so
+      // their words are emitted as paragraphs instead of being swallowed
+      const medFs = inside.map(i => i.fs).sort((a, b) => a - b)[Math.floor(inside.length / 2)];
       const bbox = {
         x0: Math.min(...inside.map(i => i.x)) - 4,
         x1: Math.max(...inside.map(i => i.x + i.w)) + 4,
-        y0: t.y0, y1: t.y1,
+        y0: t.y0 + guard * medFs * 1.6, y1: t.y1,
       };
       if(found.some(f => !(t.y1 < f.bbox.y0 - 6 || t.y0 > f.bbox.y1 + 6))) continue; // covered by grid
       if(!this._quality(rowsT, o)) continue;
@@ -7764,6 +7780,37 @@ const OcrTables = {
              y0: hLines[0] / scale * o.ptScale, y1: hLines[hLines.length - 1] / scale * o.ptScale},
       rows: dataRows,
     });
+  },
+
+  /* grayscale + contrast stretch before recognition — measurably better
+     character accuracy on faded or unevenly lit scans */
+  enhanceForOcr(canvas){
+    const out = document.createElement('canvas');
+    out.width = canvas.width; out.height = canvas.height;
+    const ctx = out.getContext('2d', {willReadFrequently: true});
+    ctx.drawImage(canvas, 0, 0);
+    try{
+      const img = ctx.getImageData(0, 0, out.width, out.height);
+      const d = img.data;
+      let lo = 255, hi = 0;
+      const gray = new Uint8ClampedArray(d.length / 4);
+      for(let i = 0, g = 0; i < d.length; i += 4, g++){
+        const v = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+        gray[g] = v;
+        if(v < lo) lo = v;
+        if(v > hi) hi = v;
+      }
+      const range = Math.max(1, hi - lo);
+      const lo2 = lo + (range * 0.02), hi2 = hi - (range * 0.02);
+      const scale = 255 / Math.max(1, hi2 - lo2);
+      for(let i = 0, g = 0; i < d.length; i += 4, g++){
+        let v = (gray[g] - lo2) * scale;
+        v = v < 0 ? 0 : v > 255 ? 255 : v;
+        d[i] = d[i + 1] = d[i + 2] = v;
+      }
+      ctx.putImageData(img, 0, 0);
+    }catch(e){ /* fall back to the raw raster */ }
+    return out;
   },
 
   /* erase long ruling lines from a page raster so Tesseract reads table cells
@@ -8243,34 +8290,98 @@ async function PdfTE_open(file){
   }
 
   /* ---------- geometry for an edit (user-space, rotation-safe) ---------- */
-  function geometryFor(item){
-    const {vp} = S.pageCache.get(S.cur);
+  function geometryFor(item, pdOpt){
+    const pd = pdOpt || S.pageCache.get(S.cur);
+    const vp = pd.vp, cvs = pd.canvas;
     const k = S.scale;
     const rough = {x0: item.x, x1: item.x + item.w, y0: item.baselineY - item.fs * item.ascent, y1: item.baselineY - item.fs * item.descent};
     // cover the REAL ink extents (not just the estimated box) so no glyph
     // fragment survives a redaction patch
     let cov = rough;
     try{
-      const bg = PdfTE_sampleColor(canvas, rough, k, 'cover');
-      const ink = PdfTE_inkRect(canvas, item, k, bg);
+      const bg = PdfTE_sampleColor(cvs, rough, k, 'cover');
+      const ink = PdfTE_inkRect(cvs, item, k, bg);
       if(ink) cov = ink;
     }catch(e){}
     const pad = Math.max(2, item.fs * 0.18);
     const bx0 = cov.x0 - pad, bx1 = cov.x1 + pad;
     const by0 = cov.y0 - pad, by1 = cov.y1 + pad;
     const [px0, py0] = PdfTE_pdfPoint(vp, item.x, item.baselineY);           // replacement origin (baseline start)
-    const [cx0, cy0] = PdfTE_pdfPoint(vp, bx0, by0);                         // cover rect corner (top-left in view)
-    const [cx1, cy1] = PdfTE_pdfPoint(vp, bx1, by0);
-    const [cx2, cy2] = PdfTE_pdfPoint(vp, bx0, by1);
-    const w = Math.hypot(cx1 - cx0, cy1 - cy0);
-    const h = Math.hypot(cx2 - cx0, cy2 - cy0);
-    const rotDeg = Math.atan2(cy1 - cy0, cx1 - cx0) * 180 / Math.PI;
+    // pdf-lib drawRectangle anchors at the BOTTOM-LEFT corner of the rect and
+    // grows upward — anchor at the bottom edge of the cover (larger top-down y),
+    // NOT the top edge, or the patch lands above the text and hides nothing
+    const [ax, ay] = PdfTE_pdfPoint(vp, bx0, by1);                           // bottom-left of cover
+    const [bx, by] = PdfTE_pdfPoint(vp, bx1, by1);                           // bottom-right
+    const [tx, ty] = PdfTE_pdfPoint(vp, bx0, by0);                           // top-left
+    const w = Math.hypot(bx - ax, by - ay);
+    const h = Math.hypot(tx - ax, ty - ay);
+    const rotDeg = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;
     return {
       bbox: rough,
       baselineY: item.baselineY, fs: item.fs,
       pdfX: px0, pdfY: py0,
-      cover: {x: cx0, y: cy0, w, h, rot: rotDeg},
+      cover: {x: ax, y: ay, w, h, rot: rotDeg},
     };
+  }
+
+  /* ---------- post-edit verification ----------
+     Deleted text must leave a BLANK background. After every regenerate we
+     re-render the page and pixel-check each deletion region; if ink survived
+     (exotic encodings, clipped drawing, split items), a hard cover is drawn
+     from the residual ink and the document is regenerated once more. */
+  async function verifyDeletions(appliedList){
+    const dels = (appliedList || []).filter(e2 => !String(e2.replacement || '').trim()
+      && e2.method !== 'force-cover' && !e2.verified);
+    if(!dels.length) return false;
+    const extra = [];
+    for(const e2 of dels){
+      const pd = S.pageCache.get(e2.page);
+      if(!pd || !pd.canvas) continue;
+      const r = e2.bbox;
+      if(!r || r.x1 - r.x0 <= 0 || r.y1 - r.y0 <= 0) continue;
+      const k = S.scale;
+      const pad = Math.max(2, (e2.fs || 12) * 0.2);
+      const rect = {x0: r.x0 - pad, x1: r.x1 + pad, y0: r.y0 - pad, y1: r.y1 + pad};
+      try{
+        const bg = PdfTE_sampleColor(pd.canvas, rect, k, 'cover');
+        const x0 = Math.max(0, Math.floor(rect.x0 * k)), y0 = Math.max(0, Math.floor(rect.y0 * k));
+        const x1 = Math.min(pd.canvas.width - 1, Math.ceil(rect.x1 * k)), y1 = Math.min(pd.canvas.height - 1, Math.ceil(rect.y1 * k));
+        if(x1 <= x0 || y1 <= y0) continue;
+        const d = pd.canvas.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data;
+        const br = bg.r * 255, bgc = bg.g * 255, bb = bg.b * 255;
+        let ink = 0;
+        for(let i = 0; i < d.length; i += 4){
+          if(Math.abs(d[i] - br) + Math.abs(d[i + 1] - bgc) + Math.abs(d[i + 2] - bb) > 96) ink++;
+        }
+        if(ink > (x1 - x0) * (y1 - y0) * 0.02){
+          e2.verified = true;
+          const pseudo = {
+            x: r.x0, w: r.x1 - r.x0,
+            baselineY: e2.baselineY || r.y1,
+            fs: e2.fs || Math.max(8, r.y1 - r.y0),
+            ascent: 1.05, descent: -0.25,
+          };
+          const g = geometryFor(pseudo, pd);
+          extra.push(Object.assign({
+            id: 'v' + Date.now() + Math.random().toString(36).slice(2, 6),
+            page: e2.page, original: e2.original, replacement: '',
+            fontFamily: 'Helvetica', origFont: e2.origFont || '',
+            fs: pseudo.fs, color: {r: 0, g: 0, b: 0},
+            coverColor: bg, align: 'left', bold: false, italic: false,
+            method: 'force-cover', key: e2.key + '-cover',
+          }, g));
+        } else {
+          e2.verified = true;
+        }
+      }catch(err){ e2.verified = true; }
+    }
+    if(extra.length){
+      S.edits = S.edits.concat(extra);
+      toast('Some deleted text resisted stream removal — a background patch was applied to guarantee a clean page.', 'warn');
+      await regenerate();
+      return true;
+    }
+    return false;
   }
 
   /* ---------- canvas + overlay rendering ---------- */
@@ -8424,6 +8535,7 @@ async function PdfTE_open(file){
   async function applyEdits(list){
     S.undo.push(JSON.stringify(S.edits)); S.redo = [];
     S.edits = S.edits.concat(list);
+    S._lastApplied = list;
     await regenerate();
   }
   async function undo(){ if(!S.undo.length) return; S.redo.push(JSON.stringify(S.edits)); S.edits = JSON.parse(S.undo.pop()); await regenerate(); }
@@ -8452,6 +8564,10 @@ async function PdfTE_open(file){
       S.pageCache.delete(S.cur); // re-extract from the edited doc
       await renderCurrent();
       refreshThumbBadges();
+      if(S._lastApplied){
+        const applied = S._lastApplied; S._lastApplied = null;
+        await verifyDeletions(applied);
+      }
     }catch(e){
       console.error(e);
       toast('Could not apply the edit: ' + (e.message || e), 'err');
