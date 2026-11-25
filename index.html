@@ -1121,6 +1121,7 @@ const ICON_PATHS = {
   'type-cursor':'<path d="M9 3h6"/><path d="M12 3v18"/><path d="M9 21h6"/>',
   pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   'pen-tool':'<path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 7.586 7.586"/><circle cx="11" cy="11" r="2"/>',
+  'file-pen-line':'<path d="M12.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v3"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9.5 13.5 5-5a2.1 2.1 0 0 1 3 3l-5 5-3.5 1 1-3.5Z"/><path d="M3 21.5h6"/>',
   highlighter:'<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4l8 8z"/>',
   crop:'<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
   copy:'<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
@@ -4535,20 +4536,37 @@ registerTool({
     const {pages} = await extractDocStructure(files[0].bytes, prog);
     prog.set(85, 'Building DOCX…');
     const blocks = [];
+    let tablesCount = 0;
     for(const p of pages){
+      const items = [];
+      for(const l of p.lines) for(const it of (l.items || [])) items.push(it);
+      const tables = items.length >= 4 ? Tables.detect(items, {minCols: 2, minRows: 2}) : [];
+      tables.sort((a, b) => a.y0 - b.y0);
+      tablesCount += tables.length;
+      let ti = 0;
       for(const l of p.lines){
+        while(ti < tables.length && tables[ti].y0 <= l.y){
+          const rowsT = Tables.trimRaggedRows(tables[ti++].rows, 2);
+          if(rowsT.length >= 2) blocks.push({t: 'table', rows: rowsT});
+        }
+        if(tables.some(t2 => l.y >= t2.y0 - 2 && l.y <= t2.y1 + 2)) continue;
         if(!l.str) continue;
         if(l.level === 1) blocks.push({t: 'h1', text: l.str});
         else if(l.level === 2) blocks.push({t: 'h2', text: l.str});
         else if(l.level === 3) blocks.push({t: 'h3', text: l.str});
         else blocks.push({t: 'p', text: l.str});
       }
+      while(ti < tables.length){
+        const rowsT = Tables.trimRaggedRows(tables[ti++].rows, 2);
+        if(rowsT.length >= 2) blocks.push({t: 'table', rows: rowsT});
+      }
       blocks.push({t: 'pagebreak'});
     }
+    tablesCount = blocks.filter(b => b.t === 'table').length;
     const blob = await DocxW.build(blocks, {title: U.baseName(files[0].name)});
     const bytes = new Uint8Array(await blob.arrayBuffer());
     return {files: [{name: U.sanitizeName(U.baseName(files[0].name)) + '.docx', blob, bytes}],
-      stats: [{b: pages.length, s: 'pages'}],
+      stats: [{b: pages.length, s: 'pages'}, {b: tablesCount, s: 'tables rebuilt as Word tables'}],
       message: 'Word document created.',
       warnings: ['Layout is rebuilt from text positions (headings, paragraphs, page breaks) — complex multi-column layouts and inline images are simplified. For scans use the OCR variant.']};
   },
@@ -5242,7 +5260,7 @@ registerTool({
 registerTool({
   id: 'ocr-pdf', name: 'OCR PDF', cat: 'optimize', icon: 'text-select', color: 'var(--c-optimize)',
   short: 'Make scanned pages searchable and extract text',
-  desc: 'Recognizes text in scanned pages with Tesseract (engine bundled, runs locally) and builds a searchable PDF with an invisible text layer — plus exports the plain text.',
+  desc: 'Recognizes text in scanned pages with Tesseract (engine bundled, runs locally) and builds a searchable PDF with an invisible text layer — plus exports an editable Word (.docx) file in which detected tables become real editable Word tables, and the plain text.',
   keywords: ['ocr', 'scan', 'searchable', 'recognize', 'text'],
   multiple: false,
   net: 'engine',
@@ -5282,13 +5300,17 @@ registerTool({
       prog.set(88 + (r.page / pages.length) * 8, `Layered page ${r.page}…`);
     }
     const b = await out.save();
+    let docxFile = null;
+    try{ docxFile = await buildOcrWordDocx(ocr, files[0], prog, parseInt(opts.quality) || 180); }
+    catch(e){ console.warn('Word build failed', e); }
     const textBytes = new TextEncoder().encode(ocr.map(r => `--- Page ${r.page} ---\n${r.text}`).join('\n\n'));
     doc.destroy && doc.destroy();
     const wordCount = ocr.reduce((s, r) => s + Txt.words(r.text).length, 0);
     return {files: [
         {name: U.sanitizeName(U.baseName(files[0].name)) + '_searchable.pdf', blob: U.pdfBlob(b), bytes: b},
+        ...(docxFile ? [docxFile] : []),
         {name: U.sanitizeName(U.baseName(files[0].name)) + '_ocr.txt', blob: U.blobOf(textBytes, 'text/plain'), bytes: textBytes}],
-      stats: [{b: ocr.length, s: 'pages OCRed'}, {b: wordCount.toLocaleString(), s: 'words found'}],
+      stats: [{b: ocr.length, s: 'pages OCRed'}, {b: wordCount.toLocaleString(), s: 'words found'}, {b: docxFile ? docxFile.tables : 0, s: 'tables detected'}],
       message: 'Searchable PDF created — text is now selectable and searchable.',
       warnings: limit < n ? [`Only the first ${limit} of ${n} pages were processed (page limit). Run again with a higher limit for the rest.`] : []};
   },
@@ -6947,7 +6969,7 @@ function toolIconColor(t){ return t.color; }
 
 /* ---------------- home ---------------- */
 function renderHome(){
-  const popular = ['merge-pdf','split-pdf','compress-pdf','pdf-to-word','pdf-to-jpg','word-to-pdf','edit-pdf','sign-pdf','protect-pdf','ocr-pdf','jpg-to-pdf','pdf-to-excel']
+  const popular = ['merge-pdf','split-pdf','compress-pdf','pdf-to-word','pdf-to-jpg','word-to-pdf','edit-pdf','edit-pdf-text','sign-pdf','protect-pdf','ocr-pdf','jpg-to-pdf','pdf-to-excel']
     .map(toolById).filter(Boolean);
   const recent = (Store.get('recentTools', []) || []).map(toolById).filter(Boolean).slice(0, 6);
   qs('#main').innerHTML = `
@@ -7171,6 +7193,1263 @@ async function renderViewer(){
     }catch(e){ toast('Could not open PDF: ' + e.message, 'err'); }
   });
 }
+
+
+/* ================================================================================
+   Edit PDF Text — genuine in-place text editing engine
+   Strategy per edit:
+     1) BEST: rewrite the page content stream and DELETE the text-show operators
+        that produced the original text (text truly removed — graphics behind it
+        are preserved). Implemented with a small content-stream tokenizer.
+     2) FALLBACK ("redact"): when the font encoding defeats matching (subset
+        CID fonts, custom encodings), cover the original glyphs with a rectangle
+        whose color is sampled from the rendered page, then draw the replacement.
+        The UI labels which method was used for every edit.
+   Replacement text is drawn at the original baseline with the closest standard
+   font (Times/Helvetica/Courier family), size, color and alignment.
+   The edited document is always regenerated from (original + edit list), which
+   makes undo/redo exact and never corrupts unchanged pages.
+   ================================================================================ */
+
+const PdfTextEdit = {
+  /* ---------- text matching helpers ---------- */
+  norm(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); },
+
+  /* decode the operand of a PDF show operator to an approximate unicode string */
+  pdfStringToText(raw){ // raw = content between ( ) with escapes already resolved to bytes
+    let out = '';
+    for(let i = 0; i < raw.length; i++){
+      const c = raw.charCodeAt(i);
+      out += String.fromCharCode(c <= 0xFF ? c : 0x3F);
+    }
+    // try UTF-16BE when the byte pattern smells like it (many CID hex strings)
+    if(/(\x00[\x20-\x7E]){3,}/.test(raw)){
+      let u = '';
+      for(let i = 0; i + 1 < raw.length; i += 2) u += String.fromCharCode((raw.charCodeAt(i) << 8) | raw.charCodeAt(i + 1));
+      if(/[\x20-\x7E]/.test(u)) return u;
+    }
+    return out;
+  },
+
+  /* tokenize a content stream; returns show-operator occurrences:
+     [{op:'Tj'|'TJ'|"'", text, start, end}] with byte offsets in `src` */
+  findShowOps(src){
+    const ops = [];
+    let i = 0, n = src.length;
+    const isWs = c => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f' || c === '\0';
+    while(i < n){
+      const c = src[i];
+      if(isWs(c)){ i++; continue; }
+      if(c === '%'){ while(i < n && src[i] !== '\n') i++; continue; }
+      if(c === '('){ // literal string (nesting + escapes)
+        let depth = 1, buf = '', j = i + 1;
+        while(j < n && depth > 0){
+          const ch = src[j];
+          if(ch === '\\'){
+            const e = src[j + 1];
+            if(e === 'n') buf += '\n';
+            else if(e === 'r') buf += '\r';
+            else if(e === 't') buf += '\t';
+            else if(e === 'b') buf += '\b';
+            else if(e === 'f') buf += '\f';
+            else if(e >= '0' && e <= '7'){
+              let oct = '', k = j + 1;
+              while(k < n && oct.length < 3 && src[k] >= '0' && src[k] <= '7'){ oct += src[k]; k++; }
+              buf += String.fromCharCode(parseInt(oct, 8) & 0xFF); j = k - 1;
+            }
+            else if(e === '\r'){ if(src[j + 2] === '\n') j++; }
+            else buf += e;
+            j += 2;
+          } else {
+            if(ch === '(') depth++;
+            else if(ch === ')'){ depth--; if(depth === 0) break; }
+            buf += ch;
+            j++;
+          }
+        }
+        const close = src.indexOf(')', j);
+        const end = close < 0 ? n : close + 1;
+        // operator follows after optional whitespace
+        let k = end; while(k < n && isWs(src[k])) k++;
+        const op = src.substr(k, 3);
+        if(op.startsWith('Tj')) ops.push({op: 'Tj', text: this.pdfStringToText(buf), start: i, end: k + 2});
+        else if(op.startsWith("'") || op.startsWith('"')) ops.push({op: op[0], text: this.pdfStringToText(buf), start: i, end: k + 1});
+        i = end;
+        continue;
+      }
+      if(c === '<' && src[i + 1] !== '<'){ // hex string
+        const close = src.indexOf('>', i + 1);
+        const hex = src.slice(i + 1, close < 0 ? n : close).replace(/[^0-9A-Fa-f]/g, '');
+        let raw = '';
+        for(let h = 0; h + 1 < hex.length; h += 2) raw += String.fromCharCode(parseInt(hex.substr(h, 2), 16));
+        if(hex.length % 2) raw += String.fromCharCode(parseInt(hex[hex.length - 1], 16) * 16);
+        let k = close < 0 ? n : close + 1; while(k < n && isWs(src[k])) k++;
+        const op = src.substr(k, 2);
+        if(op === 'Tj') ops.push({op: 'Tj', text: this.pdfStringToText(raw), start: i, end: k + 2});
+        i = close < 0 ? n : close + 1;
+        continue;
+      }
+      if(c === '['){ // TJ array: find matching ] then operator
+        let depth = 1, j = i + 1;
+        while(j < n && depth > 0){
+          const ch = src[j];
+          if(ch === '\\'){ j += 2; continue; }
+          if(ch === '[') depth++;
+          else if(ch === ']') depth--;
+          else if(ch === '('){ // skip literal inside array
+            let d2 = 1; j++;
+            while(j < n && d2 > 0){
+              if(src[j] === '\\'){ j += 2; continue; }
+              if(src[j] === '(') d2++;
+              else if(src[j] === ')') d2--;
+              j++;
+            }
+            continue;
+          }
+          else if(ch === '<' && src[j + 1] !== '<'){
+            const close = src.indexOf('>', j + 1); j = close < 0 ? n : close; j++;
+            continue;
+          }
+          j++;
+        }
+        let k = j; while(k < n && isWs(src[k])) k++;
+        if(src.substr(k, 2) === 'TJ'){
+          // collect all literal strings inside the array
+          const inner = src.slice(i, j);
+          let text = '', m = 0;
+          while(m < inner.length){
+            const ch = inner[m];
+            if(ch === '('){
+              let depth2 = 1, buf = '', p = m + 1;
+              while(p < inner.length && depth2 > 0){
+                const ch2 = inner[p];
+                if(ch2 === '\\'){
+                  const e = inner[p + 1];
+                  if(e === 'n') buf += '\n'; else if(e === 'r') buf += '\r'; else if(e === 't') buf += '\t';
+                  else if(e >= '0' && e <= '7'){ let oct = '', q = p + 1; while(q < inner.length && oct.length < 3 && inner[q] >= '0' && inner[q] <= '7'){ oct += inner[q]; q++; } buf += String.fromCharCode(parseInt(oct, 8) & 0xFF); p = q; }
+                  else buf += e;
+                  p += 2;
+                } else {
+                  if(ch2 === '(') depth2++;
+                  else if(ch2 === ')'){ depth2--; if(depth2 === 0) break; }
+                  buf += ch2; p++;
+                }
+              }
+              text += this.pdfStringToText(buf); m = p; continue;
+            }
+            if(ch === '<' && inner[m + 1] !== '<'){
+              const close = inner.indexOf('>', m + 1);
+              const hex = inner.slice(m + 1, close < 0 ? inner.length : close).replace(/[^0-9A-Fa-f]/g, '');
+              let raw = '';
+              for(let h = 0; h + 1 < hex.length; h += 2) raw += String.fromCharCode(parseInt(hex.substr(h, 2), 16));
+              text += this.pdfStringToText(raw); m = close < 0 ? inner.length : close + 1; continue;
+            }
+            m++;
+          }
+          ops.push({op: 'TJ', text, start: i, end: k + 2});
+          i = k + 2; continue;
+        }
+        i = j; continue;
+      }
+      if(c === '/' || c === '<' || c === ']' || c === '>' || c === '{' || c === '}'){ i++; continue; }
+      // number or operator: skip token
+      let j = i;
+      while(j < n && !isWs(src[j]) && '()<>[]{}/%'.indexOf(src[j]) < 0) j++;
+      i = j > i ? j : i + 1;
+    }
+    return ops;
+  },
+
+  /* get the full decoded content stream of a page (concatenating array parts) */
+  async pageContentStreams(pdfDoc, pageIdx){ // pageIdx is 1-based
+    const page = pdfDoc.getPage(pageIdx - 1);
+    const node = page.node;
+    const cRef = node.get(PDFLib.PDFName.of('Contents'));
+    if(!cRef) return null;
+    const resolved = pdfDoc.context.lookup(cRef);
+    const parts = [];
+    if(resolved instanceof PDFLib.PDFArray){
+      for(let i = 0; i < resolved.size(); i++){
+        const st = pdfDoc.context.lookup(resolved.get(i));
+        if(st instanceof PDFLib.PDFRawStream) parts.push({ref: resolved.get(i), stream: st});
+        else if(st instanceof PDFLib.PDFContentStream) parts.push({ref: resolved.get(i), stream: st});
+      }
+    } else if(resolved instanceof PDFLib.PDFRawStream || resolved instanceof PDFLib.PDFContentStream){
+      parts.push({ref: cRef, stream: resolved});
+    }
+    if(!parts.length) return null;
+    let text = '';
+    for(const p of parts){
+      let bytes;
+      try{ bytes = PDFLib.decodePDFRawStream(p.stream).decode(); }
+      catch(e){ bytes = p.stream.contents; }
+      text += new TextDecoder('latin1').decode(bytes) + '\n';
+    }
+    return {page, parts, text};
+  },
+
+  /* try to remove every show-op occurrence of `target` inside a page stream */
+  attemptRemove(streamText, target){
+    const ops = this.findShowOps(streamText);
+    if(!ops.length) return null;
+    const tNorm = this.norm(target);
+    if(!tNorm) return null;
+    // pass 1: whole target inside one op
+    let hits = ops.filter(o => this.norm(o.text) === tNorm);
+    // pass 2: target split across a run of consecutive ops (whitespace-separated)
+    if(!hits.length){
+      const texts = ops.map(o => this.norm(o.text));
+      for(let i = 0; i < ops.length; i++){
+        let acc = '';
+        for(let j = i; j < ops.length; j++){
+          acc = this.norm(acc + ' ' + texts[j]);
+          if(acc === tNorm){ hits = ops.slice(i, j + 1); break; }
+          if(acc.length > tNorm.length + 2) break;
+        }
+        if(hits.length) break;
+      }
+    }
+    // pass 3: single op that CONTAINS the target with extra text — not removed
+    // (would delete unrelated glyphs); caller falls back to redaction.
+    if(!hits.length) return null;
+    // cut byte ranges (from last to first so offsets stay valid)
+    hits.sort((a, b) => b.start - a.start);
+    let out = streamText;
+    for(const h of hits) out = out.slice(0, h.start) + out.slice(h.end);
+    return out;
+  },
+
+  /* ---------- main entry: regenerate the PDF from original + edits ---------- */
+  async apply(originalBytes, edits, prog){
+    const {PDFDocument, StandardFonts, rgb, PDFName, PDFNumber, PDFRawStream, PDFArray} = PDFLib;
+    const pdfDoc = await PDFDocument.load(originalBytes, {ignoreEncryption: false, updateMetadata: false});
+    const byPage = {};
+    for(const e of edits) (byPage[e.page] = byPage[e.page] || []).push(e);
+    const pages = pdfDoc.getPages();
+    const report = {removed: 0, covered: 0, failed: 0, notes: []};
+
+    for(const [pageKey, list] of Object.entries(byPage)){
+      const idx = parseInt(pageKey, 10); // 1-based
+      const page = pages[idx - 1];
+      if(!page) { report.failed += list.length; continue; }
+      if(prog) prog.set(prog._pct, `Editing page ${idx}…`);
+
+      // 1) try true removal for every edit on this page (single stream pass)
+      let cs = null;
+      try{ cs = await this.pageContentStreams(pdfDoc, idx); }catch(e){ cs = null; }
+      const removedHere = new Set();
+      const rotObj = page.getRotation ? page.getRotation() : null;
+      const rot = rotObj == null ? 0 : (typeof rotObj.getAngle === 'function' ? rotObj.getAngle() : (rotObj.angle || 0));
+      if(cs){
+        let text = cs.text, any = false;
+        for(const e of list){
+          if(e.method === 'force-cover') continue;
+          const patched = this.attemptRemove(text, e.original);
+          if(patched !== null){
+            text = patched; any = true; removedHere.add(e.id); report.removed++;
+            e.method = 'removed';
+          }
+        }
+        if(any){
+          const bytes = new TextEncoder().encode(text);
+          const dict = cs.parts[0].stream.dict.clone();
+          dict.set(PDFName.of('Length'), PDFNumber.of(bytes.length));
+          dict.delete(PDFName.of('Filter'));        // new content is written uncompressed
+          dict.delete(PDFName.of('DecodeParms'));
+          const newRef = pdfDoc.context.register(PDFRawStream.of(dict, bytes));
+          page.node.set(PDFName.of('Contents'), newRef);
+        }
+      }
+
+      // 2) draw replacements (cover first where removal failed).
+      //    Geometry (cover rect + baseline origin) was precomputed by the UI in
+      //    USER space via the inverse viewport transform, so rotated pages work.
+      const fonts = {};
+      const getFont = async (name) => {
+        if(fonts[name]) return fonts[name];
+        return fonts[name] = await pdfDoc.embedFont(StandardFonts[name] || StandardFonts.Helvetica);
+      };
+      for(const e of list){
+        if(!removedHere.has(e.id)){
+          const col = e.coverColor || {r: 1, g: 1, b: 1};
+          if(e.cover){
+            page.drawRectangle({
+              x: e.cover.x, y: e.cover.y, width: e.cover.w, height: e.cover.h,
+              rotate: PDFLib.degrees(e.cover.rot || 0),
+              color: rgb(col.r, col.g, col.b),
+            });
+          }
+          report.covered++;
+          if(e.method !== 'force-cover'){ e.method = 'covered'; report.notes.push(`“${this.norm(e.original).slice(0, 40)}” was covered with a background-matched patch (font encoding could not be matched for true removal).`); }
+        }
+        if(this.norm(e.replacement)){
+          const stdName = this.fontFor(e);
+          const font = await getFont(stdName);
+          const size = e.fs;
+          let tx = e.pdfX;
+          if(!rot){ // alignment offsets are only safe on unrotated pages
+            try{
+              const w = font.widthOfTextAtSize(e.replacement, size);
+              if(e.align === 'center') tx = e.bbox.x0 + Math.max(0, ((e.bbox.x1 - e.bbox.x0) - w) / 2);
+              else if(e.align === 'right') tx = e.bbox.x0 + Math.max(0, (e.bbox.x1 - e.bbox.x0) - w);
+            }catch(err){}
+          }
+          const color = e.color || {r: 0, g: 0, b: 0};
+          page.drawText(e.replacement, {
+            x: tx, y: e.pdfY, size, font,
+            color: rgb(color.r, color.g, color.b),
+          });
+        }
+      }
+    }
+    const bytes = await pdfDoc.save({useObjectStreams: false});
+    return {bytes, report};
+  },
+
+  /* map an edit's font preferences to a pdf-lib StandardFonts key */
+  fontFor(e){
+    let fam = e.fontFamily || 'auto';
+    if(fam === 'auto'){
+      const of = (e.origFont || '').toLowerCase();
+      fam = /courier|mono/.test(of) ? 'Courier'
+          : (/times|georgia|garamond|serif/.test(of) && !/sans/.test(of)) ? 'Times' : 'Helvetica';
+    }
+    if(!/^(Helvetica|Times|Courier)$/.test(fam)) fam = 'Helvetica';
+    const bold = !!e.bold, italic = !!e.italic;
+    if(fam === 'Times') return bold && italic ? 'TimesBoldItalic' : bold ? 'TimesBold' : italic ? 'TimesItalic' : 'TimesRoman';
+    if(fam === 'Courier') return bold && italic ? 'CourierBoldOblique' : bold ? 'CourierBold' : italic ? 'CourierOblique' : 'Courier';
+    return bold && italic ? 'HelveticaBoldOblique' : bold ? 'HelveticaBold' : italic ? 'HelveticaOblique' : 'Helvetica';
+  },
+};
+
+
+/* ================================================================================
+   OCR tables — detect table regions in OCR results and emit real Word tables.
+   Two detectors are combined:
+     A) ruled-line grid: long horizontal/vertical dark runs on the page raster
+     B) position clustering: reuses the app's Tables.detect for borderless tables
+   ================================================================================ */
+
+/* drop stray single-column lines chained onto the first/last row of a table */
+Tables.trimRaggedRows = function(rows, minCols){
+  const filled = r => (r || []).filter(v => String(v == null ? '' : v).trim()).length;
+  const need = Math.max(2, Math.ceil((minCols || 2) / 2));
+  const thin = r => filled(r) < need;
+  const out = (rows || []).slice();
+  while(out.length > 2 && thin(out[0])) out.shift();
+  while(out.length > 2 && thin(out[out.length - 1])) out.pop();
+  return out;
+};
+
+const OcrTables = {
+  /* words: [{text, bbox:{x0,y0,x1,y1}}] in raster px; canvas: the page raster */
+  detect(words, canvas, opts){
+    const o = Object.assign({minRows: 2, minCols: 2}, opts || {});
+    const found = [];
+    try{ this._grid(words, canvas, o, found); }catch(e){ console.warn('grid detect failed', e); }
+    try{ this._cluster(words, o, found); }catch(e){ /* optional */ }
+    return found;
+  },
+
+  _wordsItems(words){
+    return words.filter(w => w.text && String(w.text).trim())
+      .map(w => ({str: String(w.text), x: w.bbox.x0, y: w.bbox.y0,
+        w: w.bbox.x1 - w.bbox.x0, fs: Math.max(6, w.bbox.y1 - w.bbox.y0)}));
+  },
+
+  /* detector B — borderless tables via existing clustering */
+  _cluster(words, o, found){
+    const items = this._wordsItems(words);
+    if(items.length < 4) return;
+    const tables = Tables.detect(items, {minCols: o.minCols, minRows: o.minRows});
+    for(const t of tables){
+      if(!t.rows || t.rows.length < o.minRows) continue;
+      const inside = items.filter(it => it.y >= t.y0 - 2 && it.y <= t.y1 + 2);
+      if(!inside.length) continue;
+      const bbox = {
+        x0: Math.min(...inside.map(i => i.x)),
+        x1: Math.max(...inside.map(i => i.x + i.w)),
+        y0: t.y0, y1: t.y1,
+      };
+      if(found.some(f => !(t.y1 < f.bbox.y0 - 6 || t.y0 > f.bbox.y1 + 6))) continue; // already covered by grid
+      const rowsT = Tables.trimRaggedRows(t.rows, o.minCols);
+      if(rowsT.length >= o.minRows) found.push({bbox, rows: rowsT});
+    }
+  },
+
+  /* detector A — ruled-line grid on the raster */
+  _grid(words, canvas, o, found){
+    if(!canvas || !canvas.width) return;
+    const scale = Math.min(1, 1100 / canvas.width);
+    let src = canvas;
+    if(scale < 1){
+      const t = document.createElement('canvas');
+      t.width = Math.round(canvas.width * scale);
+      t.height = Math.round(canvas.height * scale);
+      t.getContext('2d').drawImage(canvas, 0, 0, t.width, t.height);
+      src = t;
+    }
+    const ctx = src.getContext('2d');
+    const W = src.width, H = src.height;
+    const img = ctx.getImageData(0, 0, W, H).data;
+    const lum = i => 0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2];
+    const minRunH = Math.max(40, Math.round(W * 0.3));
+    // horizontal lines
+    const hRows = [];
+    for(let y = 0; y < H; y++){
+      let run = 0, best = 0;
+      const off = y * W * 4;
+      for(let x = 0; x < W; x++){
+        if(lum(off + x * 4) < 150){ run++; if(run > best) best = run; }
+        else run = 0;
+      }
+      if(best >= minRunH) hRows.push(y);
+    }
+    const hLines = this._cluster1D(hRows, 3);
+    if(hLines.length < 3) return;
+    const regionY0 = hLines[0], regionY1 = hLines[hLines.length - 1];
+    const regionH = regionY1 - regionY0;
+    if(regionH < 24) return;
+    // vertical lines inside the region
+    const vCols = [];
+    const minRunV = Math.max(20, Math.round(regionH * 0.55));
+    for(let x = 0; x < W; x++){
+      let run = 0, best = 0;
+      for(let y = regionY0; y <= regionY1; y++){
+        if(lum((y * W + x) * 4) < 150){ run++; if(run > best) best = run; }
+        else run = 0;
+      }
+      if(best >= minRunV) vCols.push(x);
+    }
+    const vLines = this._cluster1D(vCols, 3);
+    if(vLines.length < 3) return;
+    // build cells
+    const rows = [];
+    for(let r = 0; r + 1 < hLines.length; r++){
+      const top = hLines[r] + 2, bot = hLines[r + 1] - 2;
+      if(bot - top < 6) continue;
+      const row = [];
+      for(let c = 0; c + 1 < vLines.length; c++){
+        const left = vLines[c] + 2, right = vLines[c + 1] - 2;
+        const cellWords = words.filter(w => w.text && String(w.text).trim() && (() => {
+          const cx = (w.bbox.x0 + w.bbox.x1) / 2, cy = (w.bbox.y0 + w.bbox.y1) / 2;
+          return cx >= left / scale && cx <= right / scale && cy >= top / scale && cy <= bot / scale;
+        })());
+        row.push(cellWords.sort((a, b) => a.bbox.x0 - b.bbox.x0).map(w => String(w.text).trim()).join(' ').trim());
+      }
+      rows.push(row);
+    }
+    const dataRows = rows.filter(r2 => r2.length >= o.minCols);
+    if(dataRows.length < o.minRows) return;
+    const cells = dataRows.length * dataRows[0].length;
+    const filled = dataRows.reduce((s, r2) => s + r2.filter(v => v).length, 0);
+    if(cells && filled / cells < 0.4) return;
+    // require at least one 2-column band with two different texts (avoid false grids on underlines)
+    const colVariety = dataRows.filter(r2 => new Set(r2.slice(0, 3)).size >= 2).length;
+    if(colVariety < 1) return;
+    found.push({
+      bbox: {x0: vLines[0] / scale, x1: vLines[vLines.length - 1] / scale,
+             y0: hLines[0] / scale, y1: hLines[hLines.length - 1] / scale},
+      rows: dataRows,
+    });
+  },
+
+  _cluster1D(vals, tol){
+    const out = [];
+    for(const v of vals){
+      const last = out[out.length - 1];
+      if(last && v - last.mean <= tol){ last.xs.push(v); last.mean = last.xs.reduce((s, x) => s + x, 0) / last.xs.length; }
+      else out.push({mean: v, xs: [v]});
+    }
+    return out.map(c => Math.round(c.mean));
+  },
+};
+
+/* Build a Word document from OCR results: reading-order paragraphs + real tables */
+async function buildOcrWordDocx(ocr, file, prog, dpi){
+  if(typeof DocxW === 'undefined' || !ocr || !ocr.length) return null;
+  const base = U.sanitizeName(U.baseName(file.name));
+  const pxToPt = dpi > 0 ? 72 / dpi : 0.4;
+  const blocks = [];
+  let tablesFound = 0;
+  for(let pi = 0; pi < ocr.length; pi++){
+    const r = ocr[pi];
+    if(prog) prog.set(prog._pct, `Building Word page ${pi + 1}…`);
+    const items = OcrTables._wordsItems(r.words || []);
+    const tables = r.words && r.words.length ? OcrTables.detect(r.words, r.canvas) : [];
+    tablesFound += tables.length;
+    const lines = items.length ? groupTextLines(items) : [];
+    tables.sort((a, b) => a.bbox.y0 - b.bbox.y0);
+    const medFs = lines.length ? lines.map(l => l.fs).sort((a, b) => a - b)[Math.floor(lines.length / 2)] : 20;
+    let ti = 0; // next table to emit
+    for(const l of lines){
+      while(ti < tables.length && tables[ti].bbox.y0 <= l.y){
+        const t = tables[ti++];
+        blocks.push({t: 'table', rows: t.rows});
+      }
+      const inTable = tables.some(tb => l.y >= tb.bbox.y0 - 2 && l.y <= tb.bbox.y1 + 2
+        && l.x0 >= tb.bbox.x0 - 14 && l.x0 <= tb.bbox.x1 + 14);
+      if(inTable) continue;
+      if(!l.str || !l.str.trim()) continue;
+      const pt = Math.max(8, Math.min(22, Math.round(l.fs * pxToPt)));
+      if(l.fs > medFs * 1.35 && l.str.length < 90) blocks.push({t: 'h2', text: l.str});
+      else blocks.push({t: 'p', text: l.str, size: pt});
+    }
+    while(ti < tables.length){ blocks.push({t: 'table', rows: tables[ti++].rows}); }
+    if(pi < ocr.length - 1) blocks.push({t: 'pagebreak'});
+    await U.sleep(0);
+  }
+  if(!blocks.length) return null;
+  const blob = await DocxW.build(blocks, {title: U.baseName(file.name)});
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return {name: base + '_ocr.docx', blob, bytes, tables: tablesFound};
+}
+
+
+/* ================================================================================
+   Edit PDF Text — workspace UI (3-panel editor)
+   ================================================================================ */
+
+function PdfTE_css(){
+  if(qs('#edt-css')) return;
+  const st = el(`<style id="edt-css">
+  .edt-root{display:grid;grid-template-columns:216px minmax(0,1fr) 300px;gap:0;height:calc(100vh - var(--header-h, 60px) - 46px);min-height:520px;background:var(--bg,#f5f6fa);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+  .edt-side{background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+  .edt-side h5{margin:0;padding:10px 12px 6px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3)}
+  .edt-thumbs{overflow-y:auto;padding:4px 10px 10px;display:flex;flex-direction:column;gap:8px;flex:1}
+  .edt-thumb{border:2px solid transparent;border-radius:8px;padding:3px;cursor:pointer;text-align:center;background:transparent}
+  .edt-thumb canvas{max-width:100%;border-radius:5px;display:block;margin:0 auto;box-shadow:0 1px 4px rgba(0,0,0,.18)}
+  .edt-thumb.cur{border-color:var(--accent)}
+  .edt-thumb .edits-dot{font-size:10px;color:var(--accent);font-weight:700}
+  .edt-nav{border-top:1px solid var(--border);padding:8px 10px;display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap}
+  .edt-nav .pg-in{width:52px;text-align:center}
+  .edt-zoomrow{display:flex;gap:6px;align-items:center;justify-content:center;padding:0 10px 10px;flex-wrap:wrap}
+  .edt-search{border-top:1px solid var(--border);padding:8px 10px}
+  .edt-search input{width:100%}
+  .edt-sresults{max-height:130px;overflow-y:auto;font-size:12px;margin-top:6px}
+  .edt-sresults button{display:block;width:100%;text-align:left;padding:4px 6px;border-radius:6px;background:none;border:none;cursor:pointer;color:var(--text2)}
+  .edt-sresults button:hover{background:var(--bg,#eef)}
+  .edt-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .edt-toolbar{display:flex;gap:6px;align-items:center;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .edt-toolbar .sep{width:1px;height:20px;background:var(--border)}
+  .edt-toolbar .grow{flex:1}
+  .edt-canvaswrap{flex:1;overflow:auto;display:grid;place-items:start center;padding:18px;background:
+    repeating-conic-gradient(#e9ebf2 0% 25%, #f4f5f9 0% 50%) 50%/22px 22px}
+  .edt-pagebox{position:relative;box-shadow:0 4px 22px rgba(20,24,50,.18);border-radius:4px;background:#fff}
+  .edt-pagebox canvas{display:block;border-radius:4px}
+  .edt-overlay{position:absolute;inset:0}
+  .edt-item{position:absolute;cursor:text;border:1px solid transparent;border-radius:2px;box-sizing:border-box}
+  .edt-overlay.editing .edt-item:hover{border-color:rgba(99,102,241,.75);background:rgba(99,102,241,.10)}
+  .edt-overlay.editing .edt-item.limited:hover{border-color:rgba(234,179,8,.8);background:rgba(234,179,8,.12)}
+  .edt-item.sel{border-color:var(--accent);background:rgba(99,102,241,.14);outline:2px solid var(--accent);outline-offset:1px}
+  .edt-item.edited{border-color:rgba(16,163,74,.55);background:rgba(16,163,74,.10);border-style:dashed}
+  .edt-item.flash{animation:edtflash 1.6s ease 2}
+  @keyframes edtflash{0%,100%{background:transparent}50%{background:rgba(234,179,8,.45)}}
+  .edt-panel{background:var(--card);border-left:1px solid var(--border);overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
+  .edt-panel h5{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text3)}
+  .edt-panel .fl{display:block;font-size:11.5px;color:var(--text3);margin:6px 0 3px}
+  .edt-panel input[type=text],.edt-panel textarea,.edt-panel select{width:100%;font-size:13px}
+  .edt-panel textarea{min-height:64px;resize:vertical}
+  .edt-orig{background:var(--bg,#f2f3f8);border-radius:8px;padding:8px;font-size:12.5px;color:var(--text2);word-break:break-word;white-space:pre-wrap}
+  .edt-row{display:flex;gap:8px}
+  .edt-row>div{flex:1;min-width:0}
+  .edt-method{font-size:11.5px;border-radius:8px;padding:6px 8px;display:none}
+  .edt-method.ok{display:block;background:rgba(16,163,74,.12);color:#0f8a4d}
+  .edt-method.cov{display:block;background:rgba(234,179,8,.14);color:#8a6d00}
+  .edt-elist{display:flex;flex-direction:column;gap:6px}
+  .edt-echip{display:flex;gap:6px;align-items:center;font-size:12px;background:var(--bg,#f2f3f8);border-radius:8px;padding:6px 8px}
+  .edt-echip .m{margin-left:auto;font-size:10.5px;font-weight:700;border-radius:6px;padding:2px 6px;white-space:nowrap}
+  .edt-echip .m.removed{background:rgba(16,163,74,.15);color:#0f8a4d}
+  .edt-echip .m.covered{background:rgba(234,179,8,.18);color:#8a6d00}
+  .edt-echip button{background:none;border:none;cursor:pointer;color:var(--text3);padding:2px}
+  .edt-empty{font-size:12.5px;color:var(--text3);background:var(--bg,#f2f3f8);border-radius:8px;padding:10px;text-align:center}
+  .edt-warn{border-radius:10px;padding:10px 12px;font-size:13px;display:flex;gap:8px;align-items:flex-start}
+  .edt-warn.warn{background:rgba(234,179,8,.12);color:#7c6400}
+  .edt-warn.err{background:rgba(220,38,38,.10);color:#b91c1c}
+  .edt-warn.info{background:rgba(99,102,241,.10);color:var(--accent)}
+  .edt-status{font-size:12px;color:var(--text3);padding:0 2px}
+  .edt-busy{opacity:.55;pointer-events:none}
+  @media(max-width:980px){
+    .edt-root{grid-template-columns:minmax(0,1fr);height:auto;min-height:0}
+    .edt-side{display:none}
+    .edt-panel{border-left:none;border-top:1px solid var(--border);max-height:46vh}
+    .edt-canvaswrap{min-height:56vh}
+  }
+  </style>`);
+  document.head.appendChild(st);
+}
+
+/* viewport -> PDF user space (inverse of pdf.js transform), exact for rotated pages */
+function PdfTE_pdfPoint(vp, x, y){
+  const m = vp.transform, a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5];
+  const det = a * d - b * c;
+  const dx = x - e, dy = y - f;
+  return [(d * dx - c * dy) / det, (-b * dx + a * dy) / det];
+}
+
+/* color sampling on a rendered canvas (top-down coords, scale k) */
+function PdfTE_sampleColor(canvas, rect, k, mode){ // mode 'text' | 'cover'
+  try{
+    const ctx = canvas.getContext('2d');
+    const x0 = Math.max(0, Math.floor(rect.x0 * k)), y0 = Math.max(0, Math.floor(rect.y0 * k));
+    const x1 = Math.min(canvas.width - 1, Math.ceil(rect.x1 * k)), y1 = Math.min(canvas.height - 1, Math.ceil(rect.y1 * k));
+    let px;
+    if(mode === 'cover'){
+      const band = Math.max(2, Math.round((rect.y1 - rect.y0) * k * 0.28));
+      const top = ctx.getImageData(x0, Math.max(0, y0 - band), Math.max(1, x1 - x0), band);
+      const bot = ctx.getImageData(x0, Math.min(canvas.height - band, y1), Math.max(1, x1 - x0), band);
+      px = [top.data, bot.data];
+    } else {
+      px = [ctx.getImageData(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0)).data];
+    }
+    let best = null, bestLum = 1e9;
+    const counts = {};
+    for(const data of px){
+      for(let i = 0; i < data.length; i += 4){
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if(mode === 'text'){
+          if(lum < bestLum){ bestLum = lum; best = [r, g, b]; }
+        } else {
+          const key = (r >> 3) + ',' + (g >> 3) + ',' + (b >> 3);
+          counts[key] = (counts[key] || [0, 0, 0, 0]);
+          counts[key][0]++; counts[key][1] = r; counts[key][2] = g; counts[key][3] = b;
+        }
+      }
+    }
+    if(mode === 'text') return best ? {r: best[0] / 255, g: best[1] / 255, b: best[2] / 255} : {r: 0, g: 0, b: 0};
+    let top = null;
+    for(const k2 in counts) if(!top || counts[k2][0] > counts[top][0]) top = k2;
+    return top ? {r: counts[top][1] / 255, g: counts[top][2] / 255, b: counts[top][3] / 255} : {r: 1, g: 1, b: 1};
+  }catch(e){ return mode === 'text' ? {r: 0, g: 0, b: 0} : {r: 1, g: 1, b: 1}; }
+}
+
+function PdfTE_hex(c){ // {r,g,b} 0..1 -> #rrggbb
+  const h = v => Math.round(v * 255).toString(16).padStart(2, '0');
+  return '#' + h(c.r) + h(c.g) + h(c.b);
+}
+function PdfTE_unhex(s){ // -> {r,g,b} 0..1
+  const v = parseInt(String(s).replace('#', ''), 16);
+  return {r: ((v >> 16) & 255) / 255, g: ((v >> 8) & 255) / 255, b: (v & 255) / 255};
+}
+
+async function PdfTE_checkCompat(bytes, prog){
+  const out = {ok: true, blocked: null, warnings: [], scanned: false, signed: false, nPages: 0};
+  // signature markers in raw bytes (cheap scan)
+  const pat = [0x2F, 0x42, 0x79, 0x74, 0x65, 0x52, 0x61, 0x6E, 0x67, 0x65]; // /ByteRange
+  outer: for(let i = 0; i < bytes.length - 10; i++){
+    for(let j = 0; j < 10; j++) if(bytes[i + j] !== pat[j]) continue outer;
+    out.signed = true; break;
+  }
+  let doc;
+  try{
+    doc = await PdfX.load(bytes);
+  }catch(e){
+    const msg = String(e && e.message || e);
+    if(/password/i.test(msg)){
+      out.ok = false;
+      out.blocked = {title: 'Password-protected PDF', msg: 'This document is encrypted, so its text cannot be edited directly. Unlock it first with the "Unlock PDF" tool (it keeps 100% local), then open the unlocked copy here.'};
+    } else {
+      out.ok = false;
+      out.blocked = {title: 'Could not open this PDF', msg: msg};
+    }
+    return out;
+  }
+  out.nPages = doc.numPages;
+  // scanned detection: sample up to 4 pages for a text layer
+  const sample = Math.min(doc.numPages, 4);
+  let chars = 0;
+  for(let i = 1; i <= sample; i++){
+    if(prog) prog.set(10 + i * 8, `Checking page ${i} for a text layer…`);
+    const items = await PdfX.pageTexts(doc, i);
+    chars += items.reduce((s, it) => s + it.str.trim().length, 0);
+    await U.sleep(0);
+  }
+  if(chars / sample < 8){
+    out.ok = false; out.scanned = true;
+    out.blocked = {title: 'This PDF appears to contain scanned images. Text editing is not supported for this document.', msg: 'Scanned pages are photographs — there is no real text underneath. To make the text selectable first, use the OCR PDF tool, then open the searchable result here.'};
+    doc.destroy && doc.destroy();
+    return out;
+  }
+  if(out.signed) out.warnings.push('This PDF contains digital signature(s). Any modification invalidates the signatures — the file will stop being "signed" after download.');
+  out.doc = doc;
+  return out;
+}
+
+/* ------------------------- the editor workspace ------------------------- */
+async function PdfTE_open(file){
+  // file: {name, bytes} — bytes already read by the upload zone
+  PdfTE_css();
+  const main = qs('#main');
+  main.innerHTML = `<div class="wrap" style="padding:16px">
+    <div class="edt-status" id="edt-boot"><span class="spin"></span> Preparing <b>${U.esc(file.name)}</b>…</div>
+    <div id="edt-host"></div></div>`;
+  const boot = qs('#edt-boot');
+  const fakeProg = {set(p, label){ boot.innerHTML = `<span class="spin"></span> ${U.esc(label || 'Working…')}`; }, _pct: 0};
+  let bytes = file.bytes;
+  if(!bytes){
+    boot.innerHTML = `<div class="edt-warn err">${ic('alert-triangle')}<span>Could not read the file.</span></div>`; return;
+  }
+  fakeProg.set(8, 'Checking compatibility…');
+  const compat = await PdfTE_checkCompat(bytes, fakeProg);
+  if(!compat.ok){
+    boot.innerHTML = `<div class="edt-warn err">${ic('alert-triangle')}<span><b>${U.esc(compat.blocked.title)}</b><br>${U.esc(compat.blocked.msg)}</span></div>
+      <div style="margin-top:12px"><a class="btn" href="#/t/ocr-pdf">${ic('text-select')} Open OCR PDF</a>
+      <a class="btn" style="margin-left:8px" href="#/t/edit-pdf-text">${ic('rotate-ccw')} Choose another file</a></div>`;
+    return;
+  }
+  const doc = compat.doc;
+  boot.remove();
+
+  /* ---------- state ---------- */
+  const S = {
+    name: file.name, base: U.sanitizeName(U.baseName(file.name)),
+    origBytes: bytes, edits: [], undo: [], redo: [],
+    cur: 1, scale: 0, fitMode: true, mode: 'edit',
+    pageCache: new Map(),    // n -> {items, vp, canvas}
+    editedDoc: null, editedDirty: true, regenerating: false,
+    selected: null,
+  };
+  const ZOOMS = [0.5, 0.65, 0.8, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  let destroyed = false;
+  PageCleanup.add(() => { destroyed = true; try{ doc.destroy(); }catch(e){} try{ S.editedDoc && S.editedDoc.destroy(); }catch(e){} });
+
+  /* ---------- shell ---------- */
+  const root = el(`<div class="edt-root">
+    <div class="edt-side">
+      <h5>Pages</h5>
+      <div class="edt-thumbs" id="edt-thumbs"></div>
+      <div class="edt-nav">
+        <button class="icon-btn" id="edt-prev" title="Previous page">${ic('arrow-left')}</button>
+        <input type="number" class="pg-in" id="edt-pgin" min="1" value="1">
+        <span class="hint" id="edt-pgind">/ ${doc.numPages}</span>
+        <button class="icon-btn" id="edt-next" title="Next page">${ic('arrow-right')}</button>
+      </div>
+      <div class="edt-zoomrow">
+        <button class="icon-btn" id="edt-zout" title="Zoom out">${ic('zoomout')}</button>
+        <span class="hint" id="edt-zl" style="min-width:42px;text-align:center">100%</span>
+        <button class="icon-btn" id="edt-zin" title="Zoom in">${ic('zoomin')}</button>
+        <button class="btn sm" id="edt-fit" title="Fit to page">${ic('columns')} Fit</button>
+      </div>
+      <div class="edt-search">
+        <input type="search" id="edt-sin" placeholder="Search text in document…">
+        <div class="edt-sresults" id="edt-sres"></div>
+      </div>
+    </div>
+    <div class="edt-main">
+      <div class="edt-toolbar" id="edt-tb">
+        <button class="btn sm" id="edt-m-select">${ic('text-select')} Select</button>
+        <button class="btn sm primary" id="edt-m-edit">${ic('pen')} Edit text</button>
+        <span class="sep"></span>
+        <button class="icon-btn" id="edt-tb-zout" title="Zoom out">${ic('zoomout')}</button>
+        <button class="icon-btn" id="edt-tb-zin" title="Zoom in">${ic('zoomin')}</button>
+        <button class="icon-btn" id="edt-tb-fit" title="Fit to page">${ic('columns')}</button>
+        <span class="sep"></span>
+        <button class="icon-btn" id="edt-undo" title="Undo (Ctrl+Z)">${ic('rotate-ccw')}</button>
+        <button class="icon-btn" id="edt-redo" title="Redo (Ctrl+Y)">${ic('rotate-cw')}</button>
+        <span class="grow"></span>
+        <button class="btn sm primary" id="edt-dl">${ic('download')} Download PDF</button>
+      </div>
+      <div class="edt-canvaswrap" id="edt-wrap"><div class="edt-pagebox" id="edt-pagebox">
+        <canvas id="edt-canvas"></canvas><div class="edt-overlay editing" id="edt-olay"></div>
+      </div></div>
+    </div>
+    <div class="edt-panel" id="edt-panel">
+      <div id="edt-props"></div>
+      <h5>Edits on this page</h5>
+      <div class="edt-elist" id="edt-elist"></div>
+      <div class="edt-status" id="edt-docstats"></div>
+    </div>
+  </div>`);
+  const host = qs('#edt-host'); host.innerHTML = ''; host.appendChild(root);
+  if(compat.warnings && compat.warnings.length){
+    host.prepend(el(`<div class="edt-warn warn">${ic('alert-triangle')}<span>${U.esc(compat.warnings.join(' '))}</span></div>`));
+  }
+
+  /* ---------- element refs ---------- */
+  const $ = id => qs('#' + id, root);
+  const wrapEl = $('edt-wrap'), pagebox = $('edt-pagebox'), canvas = $('edt-canvas'), olay = $('edt-olay');
+  const zl = $('edt-zl'), pgin = $('edt-pgin'), pgind = $('edt-pgind'), sres = $('edt-sres');
+  const elist = $('edt-elist'), props = $('edt-props'), docstats = $('edt-docstats');
+
+  /* ---------- page data (text items in scale-1 top-down coords) ---------- */
+  async function pageData(n){
+    if(S.pageCache.has(n)) return S.pageCache.get(n);
+    const d = S.editedDoc || doc;
+    const page = await d.getPage(n);
+    const vp = page.getViewport({scale: 1});
+    const tc = await page.getTextContent();
+    const items = [];
+    for(const it of tc.items){
+      if(typeof it.str !== 'string' || !it.str.trim()) continue;
+      const tx = pdfjsLib.Util.transform(vp.transform, it.transform);
+      const fs = Math.hypot(tx[2], tx[3]) || 10;
+      const style = (tc.styles && tc.styles[it.fontName]) || {};
+      items.push({
+        key: `${n}:${items.length}`, str: it.str,
+        x: tx[4], baselineY: tx[5], w: it.width || fs * it.str.length * 0.5, fs,
+        fam: style.fontFamily || 'sans-serif', ascent: style.ascent || 0.85, descent: style.descent == null ? -0.22 : style.descent,
+        fontName: it.fontName || '', limited: /[\uFFFD]/.test(it.str),
+      });
+    }
+    const rec = {items, vp, text: items.map(i => i.str).join(' ')};
+    S.pageCache.set(n, rec);
+    return rec;
+  }
+
+  /* ---------- geometry for an edit (user-space, rotation-safe) ---------- */
+  function geometryFor(item){
+    const {vp} = S.pageCache.get(S.cur);
+    const pad = Math.max(1, item.fs * 0.14);
+    const bx0 = item.x - pad, bx1 = item.x + item.w + pad;
+    const by0 = item.baselineY - item.fs * item.ascent - pad;
+    const by1 = item.baselineY - item.fs * item.descent + pad;
+    const [px0, py0] = PdfTE_pdfPoint(vp, item.x, item.baselineY);           // replacement origin (baseline start)
+    const [cx0, cy0] = PdfTE_pdfPoint(vp, bx0, by0);                         // cover rect corner (top-left in view)
+    const [cx1, cy1] = PdfTE_pdfPoint(vp, bx1, by0);
+    const [cx2, cy2] = PdfTE_pdfPoint(vp, bx0, by1);
+    const w = Math.hypot(cx1 - cx0, cy1 - cy0);
+    const h = Math.hypot(cx2 - cx0, cy2 - cy0);
+    const rotDeg = Math.atan2(cy1 - cy0, cx1 - cx0) * 180 / Math.PI;
+    return {
+      bbox: {x0: item.x, x1: item.x + item.w, y0: by0, y1: by1},
+      baselineY: item.baselineY, fs: item.fs,
+      pdfX: px0, pdfY: py0,
+      cover: {x: cx0, y: cy0, w, h, rot: rotDeg},
+    };
+  }
+
+  /* ---------- canvas + overlay rendering ---------- */
+  let renderToken = 0;
+  async function renderCurrent(){
+    const token = ++renderToken;
+    const n = S.cur;
+    const pd = await pageData(n);
+    if(token !== renderToken || destroyed) return;
+    // scale
+    if(S.fitMode){
+      const avail = wrapEl.clientWidth - 36 || 800;
+      S.scale = Math.min(2.2, Math.max(0.4, avail / pd.vp.width));
+    }
+    const k = S.scale;
+    zl.textContent = Math.round(k * 100) + '%';
+    const srcDoc = S.editedDoc || doc;
+    try{ await PdfX.renderPage(srcDoc, n, canvas, k, 0, 4096); }catch(e){ console.warn('render fail', e); }
+    if(token !== renderToken || destroyed) return;
+    pagebox.style.width = canvas.width + 'px';
+    pagebox.style.height = canvas.height + 'px';
+    buildOverlay(pd, k);
+    syncChrome();
+  }
+
+  function buildOverlay(pd, k){
+    olay.innerHTML = '';
+    olay.classList.toggle('editing', S.mode === 'edit');
+    for(const item of pd.items){
+      const top = (item.baselineY - item.fs * item.ascent) * k;
+      const h = item.fs * (item.ascent - item.descent) * k;
+      const b = el(`<div class="edt-item${item.limited ? ' limited' : ''}" data-key="${item.key}" title="${U.esc(item.str.length > 60 ? item.str.slice(0, 60) + '…' : item.str)}"
+        style="left:${item.x * k}px;top:${top}px;width:${Math.max(item.w * k, 6)}px;height:${Math.max(h, 8)}px"></div>`);
+      if(S.edits.some(e2 => e2.page === S.cur && e2.key === item.key)) b.classList.add('edited');
+      b.onclick = ev => { ev.stopPropagation(); if(S.mode === 'edit') selectItem(item); };
+      olay.appendChild(b);
+    }
+  }
+
+  function syncChrome(){
+    pgin.value = S.cur; pgind.textContent = '/ ' + doc.numPages;
+    qsa('.edt-thumb', root).forEach(t => t.classList.toggle('cur', +t.dataset.n === S.cur));
+    $('edt-undo').disabled = !S.undo.length; $('edt-redo').disabled = !S.redo.length;
+    const mine = S.edits.filter(e2 => e2.page === S.cur);
+    renderEditList(mine);
+    const total = S.edits.length;
+    docstats.innerHTML = total ? `${ic('check')} ${total} edit${total > 1 ? 's' : ''} in document · last saved ${new Date().toLocaleTimeString()}` : `${ic('info')} No changes yet — click any text on the page to edit it.`;
+  }
+
+  /* ---------- thumbnails ---------- */
+  async function buildThumbs(){
+    const host2 = $('edt-thumbs'); host2.innerHTML = '';
+    for(let n = 1; n <= doc.numPages; n++){
+      const t = el(`<div class="edt-thumb" data-n="${n}"><div class="th"></div>
+        <div style="font-size:10.5px;color:var(--text3);margin-top:2px">Page ${n} <span class="edits-dot" data-n="${n}"></span></div></div>`);
+      host2.appendChild(t);
+      t.onclick = () => gotoPage(n);
+      (async () => {
+        try{
+          const c = await PdfX.thumb(doc, n, 150);
+          qs('.th', t).appendChild(c);
+          refreshThumbBadges();
+        }catch(e){}
+      })();
+      await U.sleep(0);
+    }
+  }
+  function refreshThumbBadges(){
+    qsa('.edits-dot', root).forEach(d => {
+      const n = +d.dataset.n;
+      const c = S.edits.filter(e2 => e2.page === n).length;
+      d.textContent = c ? `· ${c} edit${c > 1 ? 's' : ''}` : '';
+    });
+  }
+
+  /* ---------- selection + right panel ---------- */
+  function selectItem(item){
+    S.selected = item;
+    qsa('.edt-item.sel', olay).forEach(x => x.classList.remove('sel'));
+    const box = qs(`.edt-item[data-key="${item.key}"]`, olay);
+    if(box) box.classList.add('sel');
+    const k = S.scale;
+    const pd = S.pageCache.get(S.cur);
+    const rect = {x0: item.x, x1: item.x + item.w, y0: item.baselineY - item.fs * item.ascent, y1: item.baselineY - item.fs * item.descent};
+    const textColor = PdfTE_sampleColor(canvas, rect, k, 'text');
+    const coverColor = PdfTE_sampleColor(canvas, rect, k, 'cover');
+    const g = geometryFor(item);
+    const famGuess = /courier|mono/i.test(item.fam) ? 'Courier' : /times|georgia|garamond|serif/i.test(item.fam) && !/sans/i.test(item.fam) ? 'Times' : 'Helvetica';
+    props.innerHTML = `
+      <h5>Edit text</h5>
+      ${item.limited ? `<div class="edt-warn warn" style="font-size:11.5px">${ic('alert-triangle')}<span>This element uses an unusual font encoding. The replacement will use the closest standard font.</span></div>` : ''}
+      <span class="fl">Original text</span>
+      <div class="edt-orig">${U.esc(item.str)}</div>
+      <span class="fl">Replacement text</span>
+      <textarea id="ep-new">${U.esc(item.str)}</textarea>
+      <div class="edt-row">
+        <div><span class="fl">Font family</span>
+          <select id="ep-fam"><option value="auto" selected>Auto (${famGuess})</option><option value="Helvetica">Helvetica</option><option value="Times">Times</option><option value="Courier">Courier</option></select></div>
+        <div style="max-width:80px"><span class="fl">Size</span>
+          <input type="number" id="ep-size" value="${Math.round(item.fs * 10) / 10}" step="0.5" min="2" max="96"></div>
+      </div>
+      <div class="edt-row">
+        <div><span class="fl">Colour</span>
+          <input type="color" id="ep-color" value="${PdfTE_hex(textColor)}" style="width:100%;height:30px;padding:2px"></div>
+        <div><span class="fl">Alignment</span>
+          <select id="ep-align"><option value="left" selected>Left</option><option value="center">Center</option><option value="right">Right</option></select></div>
+      </div>
+      <div class="edt-row" style="align-items:center;margin-top:2px">
+        <label style="font-size:12.5px;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ep-bold"> Bold</label>
+        <label style="font-size:12.5px;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ep-italic"> Italic</label>
+        <button class="btn sm" id="ep-cancel" style="margin-left:auto">Cancel</button>
+        <button class="btn sm primary" id="ep-apply">${ic('check')} Apply</button>
+      </div>
+      <div class="edt-method" id="ep-method"></div>
+      <div class="edt-status">Position, page size and all other content stay untouched. Background under the text is preserved when the text can be truly removed.</div>`;
+    qs('#ep-cancel').onclick = () => clearSelection();
+    qs('#ep-apply').onclick = async () => {
+      const replacement = qs('#ep-new').value;
+      const edit = Object.assign({
+        id: 'e' + Date.now() + Math.random().toString(36).slice(2, 6),
+        page: S.cur, key: item.key, original: item.str, replacement,
+        fontFamily: qs('#ep-fam').value, origFont: item.fontName + ' ' + item.fam,
+        fs: Math.max(2, parseFloat(qs('#ep-size').value) || item.fs),
+        color: PdfTE_unhex(qs('#ep-color').value),
+        coverColor, align: qs('#ep-align').value,
+        bold: qs('#ep-bold').checked, italic: qs('#ep-italic').checked,
+        method: item.limited ? 'force-cover' : null,
+      }, g);
+      await applyEdits([edit]);
+      clearSelection();
+    };
+    qs('#ep-new').focus();
+  }
+  function clearSelection(){
+    S.selected = null;
+    qsa('.edt-item.sel', olay).forEach(x => x.classList.remove('sel'));
+    props.innerHTML = `<h5>Edit text</h5><div class="edt-empty">${ic('pen')} Click any text on the page to edit it.<br><span style="font-size:11.5px">Hover highlights editable text; a border marks the selection.</span></div>`;
+  }
+
+  /* ---------- apply / undo / redo / regenerate ---------- */
+  async function applyEdits(list){
+    S.undo.push(JSON.stringify(S.edits)); S.redo = [];
+    S.edits = S.edits.concat(list);
+    await regenerate();
+  }
+  async function undo(){ if(!S.undo.length) return; S.redo.push(JSON.stringify(S.edits)); S.edits = JSON.parse(S.undo.pop()); await regenerate(); }
+  async function redo(){ if(!S.redo.length) return; S.undo.push(JSON.stringify(S.edits)); S.edits = JSON.parse(S.redo.pop()); await regenerate(); }
+  async function removeEdit(id){
+    S.undo.push(JSON.stringify(S.edits)); S.redo = [];
+    S.edits = S.edits.filter(e2 => e2.id !== id);
+    await regenerate();
+  }
+  async function regenerate(){
+    root.classList.add('edt-busy');
+    try{
+      if(S.edits.length){
+        const {bytes, report} = await PdfTextEdit.apply(S.origBytes, S.edits);
+        S.editedBytes = bytes;
+        if(S.editedDoc){ try{ S.editedDoc.destroy(); }catch(e){} S.editedDoc = null; }
+        S.editedDoc = await PdfX.load(bytes.slice(0));
+        // reflect methods on chips
+        for(const e2 of S.edits) if(!e2.method) e2.method = 'removed';
+        if(report.notes.length) toast(report.notes[0], 'warn');
+      } else {
+        S.editedBytes = null;
+        if(S.editedDoc){ try{ S.editedDoc.destroy(); }catch(e){} S.editedDoc = null; }
+      }
+      S.editedDirty = false;
+      S.pageCache.delete(S.cur); // re-extract from the edited doc
+      await renderCurrent();
+      refreshThumbBadges();
+    }catch(e){
+      console.error(e);
+      toast('Could not apply the edit: ' + (e.message || e), 'err');
+    }
+    root.classList.remove('edt-busy');
+  }
+
+  function renderEditList(mine){
+    elist.innerHTML = '';
+    if(!mine.length){ elist.innerHTML = `<div class="edt-empty">No edits on this page yet.</div>`; return; }
+    for(const e2 of mine){
+      const chip = el(`<div class="edt-echip" title="${U.esc(e2.original)} → ${U.esc(e2.replacement || '(deleted)')}">
+        <span style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${U.esc(e2.replacement ? '“' + e2.replacement.slice(0, 24) + '”' : '(text deleted)')}</span>
+        <span class="m ${e2.method}">${e2.method === 'removed' ? 'removed' : e2.method === 'covered' ? 'covered' : '…'}</span>
+        <button title="Remove this edit (restores original text)">${ic('trash')}</button></div>`);
+      qs('button', chip).onclick = () => removeEdit(e2.id);
+      elist.appendChild(chip);
+    }
+  }
+
+  /* ---------- navigation / zoom / search ---------- */
+  async function gotoPage(n){
+    n = Math.min(doc.numPages, Math.max(1, n));
+    if(n !== S.cur){ S.cur = n; clearSelection(); await renderCurrent(); }
+  }
+  function setZoom(delta, absolute){
+    S.fitMode = false;
+    const i = absolute != null ? ZOOMS.indexOf(absolute) : ZOOMS.indexOf(S.scale);
+    if(absolute != null) S.scale = absolute;
+    else S.scale = ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, (i < 0 ? 3 : i) + delta))];
+    renderCurrent();
+  }
+  function fitPage(){ S.fitMode = true; renderCurrent(); }
+
+  let searchSeq = 0;
+  async function doSearch(q){
+    const seq = ++searchSeq;
+    sres.innerHTML = `<div class="hint" style="padding:4px 6px">Searching…</div>`;
+    const hits = [];
+    const qn = q.trim().toLowerCase();
+    if(qn.length < 2){ sres.innerHTML = ''; return; }
+    for(let n = 1; n <= doc.numPages && hits.length < 40; n++){
+      const pd = await pageData(n);
+      if(seq !== searchSeq) return;
+      for(const it of pd.items){
+        if(it.str.toLowerCase().includes(qn)){
+          hits.push({n, item: it});
+          if(hits.length >= 40) break;
+        }
+      }
+      await U.sleep(0);
+    }
+    if(seq !== searchSeq) return;
+    sres.innerHTML = hits.length
+      ? hits.map((h, i2) => `<button data-i="${i2}"><b>p.${h.n}</b> ${U.esc(h.item.str.slice(0, 46))}</button>`).join('')
+      : `<div class="hint" style="padding:4px 6px">No matches.</div>`;
+    qsa('button', sres).forEach((b, i2) => {
+      b.onclick = async () => {
+        const h = hits[i2];
+        await gotoPage(h.n);
+        const box = qs(`.edt-item[data-key="${h.item.key}"]`, olay);
+        if(box){ box.classList.add('flash'); box.scrollIntoView({block: 'center', behavior: 'smooth'}); setTimeout(() => box.classList.remove('flash'), 3400); }
+      };
+    });
+  }
+
+  /* ---------- download ---------- */
+  async function download(){
+    const btn = $('edt-dl');
+    btn.disabled = true; btn.innerHTML = `<span class="spin"></span> Building…`;
+    try{
+      if(!S.editedBytes || S.editedDirty) await regenerate();
+      if(!S.edits.length){ toast('No edits yet — click text on the page first.', 'warn'); return; }
+      U.download(U.pdfBlob(S.editedBytes), S.base + '_edited.pdf');
+      toast('Edited PDF downloaded — open it to verify your changes.', 'ok');
+    }catch(e){ console.error(e); toast('Export failed: ' + (e.message || e), 'err'); }
+    btn.disabled = false; btn.innerHTML = `${ic('download')} Download PDF`;
+  }
+
+  /* ---------- wiring ---------- */
+  $('edt-prev').onclick = () => gotoPage(S.cur - 1);
+  $('edt-next').onclick = () => gotoPage(S.cur + 1);
+  pgin.onchange = () => gotoPage(parseInt(pgin.value, 10) || 1);
+  $('edt-zin').onclick = $('edt-tb-zin').onclick = () => setZoom(1);
+  $('edt-zout').onclick = $('edt-tb-zout').onclick = () => setZoom(-1);
+  $('edt-fit').onclick = $('edt-tb-fit').onclick = fitPage;
+  $('edt-undo').onclick = undo; $('edt-redo').onclick = redo;
+  $('edt-dl').onclick = download;
+  let sTimer = null;
+  $('edt-sin').oninput = e => { clearTimeout(sTimer); sTimer = setTimeout(() => doSearch(e.target.value), 350); };
+  $('edt-m-select').onclick = () => { S.mode = 'select'; olay.classList.remove('editing'); $('edt-m-select').classList.add('primary'); $('edt-m-edit').classList.remove('primary'); };
+  $('edt-m-edit').onclick = () => { S.mode = 'edit'; olay.classList.add('editing'); $('edt-m-edit').classList.add('primary'); $('edt-m-select').classList.remove('primary'); };
+  window.addEventListener('keydown', S._key = e => {
+    if(destroyed) return window.removeEventListener('keydown', S._key);
+    if((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z'){ e.preventDefault(); undo(); }
+    else if((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))){ e.preventDefault(); redo(); }
+    else if(e.key === 'Escape') clearSelection();
+    else if(e.key === '+' || e.key === '=') setZoom(1);
+    else if(e.key === '-') setZoom(-1);
+  });
+  PageCleanup.add(() => window.removeEventListener('keydown', S._key));
+  wrapEl.addEventListener('resize', () => { if(S.fitMode) renderCurrent(); });
+
+  clearSelection();
+  await buildThumbs();
+  await renderCurrent();
+}
+
+
+/* ================================================================================
+   Edit PDF Text — route + tool registration
+   ================================================================================ */
+
+registerTool({
+  id: 'edit-pdf-text', name: 'Edit PDF Text', cat: 'edit', icon: 'file-pen-line', color: 'var(--c-edit)',
+  short: 'Edit existing text directly inside PDF documents without converting them into Word files',
+  desc: 'Opens a real text editor on your PDF: click any sentence to rewrite it while the original layout, fonts, colours and images stay untouched. Text is genuinely removed from the document (or background-redacted when a font cannot be matched) — nothing is faked with overlays.',
+  keywords: ['edit text', 'change text', 'replace text', 'rewrite', 'modify text', 'correct typo'],
+  multiple: false,
+  steps: ['Upload a text-based PDF', 'Click any text and rewrite it', 'Apply more edits, then download the edited PDF'],
+});
+
+async function renderEditPdf(){
+  const main = qs('#main');
+  main.innerHTML = `<div class="wrap">
+    <div class="crumbs"><a href="#/">Home</a> / <a href="#/c/edit">Edit &amp; Complete</a> / Edit PDF Text</div>
+    <div class="tool-head"><span class="ticon" style="background:var(--c-edit)">${ic('file-pen-line')}</span>
+      <div><h1>Edit PDF Text</h1>
+      <p>Modify existing text in your PDF directly while preserving the original document layout.</p></div></div>
+    <div class="privacy-note">${ic('shield-check')} <span><b>100% private.</b> The PDF never leaves this device — rendering, editing and export all run locally in your browser.</span></div>
+    <div class="tool-body">
+      <div class="main-col" id="edtMain"></div>
+      <div class="side-col" id="edtSide"></div>
+    </div></div>`;
+  const mainCol = qs('#edtMain'), sideCol = qs('#edtSide');
+
+  const upload = UploadZone({accept: 'application/pdf,.pdf', multiple: false,
+    checkFile: f => /\.pdf$/i.test(f.name) ? null : 'Please choose a PDF file (.pdf).',
+    label: 'Select a PDF to edit', hint: 'or drop it here', icon: 'file-pen-line'});
+  mainCol.appendChild(upload.el);
+  const info = el(`<div class="card pad" style="margin-top:16px">
+    <b style="font-size:14px">${ic('info')} How it works</b>
+    <ol style="margin:10px 0 0;padding-left:20px;font-size:13px;color:var(--text2);line-height:1.8">
+      <li>Pick a text-based PDF — pages render exactly as they look in any reader.</li>
+      <li>Hover highlights the editable text; click a line to open the edit panel.</li>
+      <li>Rewrite it (or delete it), press <b>Apply</b>, keep editing other lines or pages.</li>
+      <li><b>Download PDF</b> writes a real document: original text is removed from the file and your replacement is drawn in its place.</li>
+    </ol></div>`);
+  mainCol.appendChild(info);
+
+  const goCard = el(`<div class="card pad"><button class="btn primary big block" id="edtGo" disabled>${ic('pen')} Open editor</button>
+    <div class="hint" style="margin-top:10px">Everything runs on your device. Large PDFs may take a moment on first render.</div></div>`);
+  sideCol.appendChild(goCard);
+  const supp = el(`<div class="card pad"><b style="font-size:14px">${ic('shield-check')} Good to know</b>
+    <ul style="margin:10px 0 0;padding-left:18px;font-size:12.5px;color:var(--text2);line-height:1.8">
+      <li><b>Supported:</b> normal text PDFs, multi-page documents, embedded standard fonts.</li>
+      <li><b>Not supported:</b> scanned/image PDFs (no real text — use <a href="#/t/ocr-pdf">OCR PDF</a> first) and password-protected files (unlock first).</li>
+      <li><b>Fonts:</b> replacements use the closest match among Helvetica, Times and Courier; exotic embedded fonts fall back with a clear note.</li>
+      <li><b>Signed PDFs:</b> editable, but any change invalidates the digital signature.</li>
+    </ul></div>`);
+  sideCol.appendChild(supp);
+
+  const goBtn = qs('#edtGo');
+  upload.onChange = () => { goBtn.disabled = upload.files.length === 0; };
+  goBtn.onclick = async () => {
+    if(!upload.files.length) return;
+    try{
+      await upload.ensureBytes();
+      const entry = upload.files[0];
+      await PdfTE_open({name: entry.name, bytes: entry.bytes});
+    }catch(e){ toast('Could not open the PDF: ' + (e.message || e), 'err'); }
+  };
+  if(Chain.data){
+    const d = Chain.data;
+    Chain.data = null;
+    try{
+      const f = d.file || new File([U.blobOf(d.bytes, 'application/pdf')], d.name || 'document.pdf', {type: 'application/pdf'});
+      upload.add([f]);
+      toast('Loaded file from previous tool', 'ok');
+    }catch(e){}
+  }
+}
+
+Router.add(/^\/t\/edit-pdf-text$/, renderEditPdf);
+
+
+/* ================================================================================
+   Edit PDF Text — route + tool registration
+   ================================================================================ */
+
+registerTool({
+  id: 'edit-pdf-text', name: 'Edit PDF Text', cat: 'edit', icon: 'file-pen-line', color: 'var(--c-edit)',
+  short: 'Edit existing text directly inside PDF documents without converting them into Word files',
+  desc: 'Opens a real text editor on your PDF: click any sentence to rewrite it while the original layout, fonts, colours and images stay untouched. Text is genuinely removed from the document (or background-redacted when a font cannot be matched) — nothing is faked with overlays.',
+  keywords: ['edit text', 'change text', 'replace text', 'rewrite', 'modify text', 'correct typo'],
+  multiple: false,
+  steps: ['Upload a text-based PDF', 'Click any text and rewrite it', 'Apply more edits, then download the edited PDF'],
+});
+
+async function renderEditPdf(){
+  const main = qs('#main');
+  main.innerHTML = `<div class="wrap">
+    <div class="crumbs"><a href="#/">Home</a> / <a href="#/c/edit">Edit &amp; Complete</a> / Edit PDF Text</div>
+    <div class="tool-head"><span class="ticon" style="background:var(--c-edit)">${ic('file-pen-line')}</span>
+      <div><h1>Edit PDF Text</h1>
+      <p>Modify existing text in your PDF directly while preserving the original document layout.</p></div></div>
+    <div class="privacy-note">${ic('shield-check')} <span><b>100% private.</b> The PDF never leaves this device — rendering, editing and export all run locally in your browser.</span></div>
+    <div class="tool-body">
+      <div class="main-col" id="edtMain"></div>
+      <div class="side-col" id="edtSide"></div>
+    </div></div>`;
+  const mainCol = qs('#edtMain'), sideCol = qs('#edtSide');
+
+  const upload = UploadZone({accept: 'application/pdf,.pdf', multiple: false,
+    checkFile: f => /\.pdf$/i.test(f.name) ? null : 'Please choose a PDF file (.pdf).',
+    label: 'Select a PDF to edit', hint: 'or drop it here', icon: 'file-pen-line'});
+  mainCol.appendChild(upload.el);
+  const info = el(`<div class="card pad" style="margin-top:16px">
+    <b style="font-size:14px">${ic('info')} How it works</b>
+    <ol style="margin:10px 0 0;padding-left:20px;font-size:13px;color:var(--text2);line-height:1.8">
+      <li>Pick a text-based PDF — pages render exactly as they look in any reader.</li>
+      <li>Hover highlights the editable text; click a line to open the edit panel.</li>
+      <li>Rewrite it (or delete it), press <b>Apply</b>, keep editing other lines or pages.</li>
+      <li><b>Download PDF</b> writes a real document: original text is removed from the file and your replacement is drawn in its place.</li>
+    </ol></div>`);
+  mainCol.appendChild(info);
+
+  const goCard = el(`<div class="card pad"><button class="btn primary big block" id="edtGo" disabled>${ic('pen')} Open editor</button>
+    <div class="hint" style="margin-top:10px">Everything runs on your device. Large PDFs may take a moment on first render.</div></div>`);
+  sideCol.appendChild(goCard);
+  const supp = el(`<div class="card pad"><b style="font-size:14px">${ic('shield-check')} Good to know</b>
+    <ul style="margin:10px 0 0;padding-left:18px;font-size:12.5px;color:var(--text2);line-height:1.8">
+      <li><b>Supported:</b> normal text PDFs, multi-page documents, embedded standard fonts.</li>
+      <li><b>Not supported:</b> scanned/image PDFs (no real text — use <a href="#/t/ocr-pdf">OCR PDF</a> first) and password-protected files (unlock first).</li>
+      <li><b>Fonts:</b> replacements use the closest match among Helvetica, Times and Courier; exotic embedded fonts fall back with a clear note.</li>
+      <li><b>Signed PDFs:</b> editable, but any change invalidates the digital signature.</li>
+    </ul></div>`);
+  sideCol.appendChild(supp);
+
+  const goBtn = qs('#edtGo');
+  upload.onChange = () => { goBtn.disabled = upload.files.length === 0; };
+  goBtn.onclick = async () => {
+    if(!upload.files.length) return;
+    try{
+      await upload.ensureBytes();
+      const entry = upload.files[0];
+      await PdfTE_open({name: entry.name, bytes: entry.bytes});
+    }catch(e){ toast('Could not open the PDF: ' + (e.message || e), 'err'); }
+  };
+  if(Chain.data){
+    const d = Chain.data;
+    Chain.data = null;
+    try{
+      const f = d.file || new File([U.blobOf(d.bytes, 'application/pdf')], d.name || 'document.pdf', {type: 'application/pdf'});
+      upload.add([f]);
+      toast('Loaded file from previous tool', 'ok');
+    }catch(e){}
+  }
+}
+
+Router.add(/^\/t\/edit-pdf-text$/, renderEditPdf);
+
 
 /* ---------------- recent files ---------------- */
 async function renderRecent(){
