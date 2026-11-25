@@ -3055,7 +3055,10 @@ const DocxW = {
       const text = b.text || '';
       const paras = String(text).split('\n');
       for(const line of paras){
-        body.push(`<w:p>${style !== 'Normal' ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ''}<w:r><w:rPr>${rpr.join('')}</w:rPr><w:t xml:space="preserve">${DocxW.esc(line)}</w:t></w:r></w:p>`);
+        const ppr = (style !== 'Normal' || (b.align && b.align !== 'left'))
+          ? `<w:pPr>${style !== 'Normal' ? `<w:pStyle w:val="${style}"/>` : ''}${b.align && b.align !== 'left' ? `<w:jc w:val="${b.align === 'justify' ? 'both' : b.align}"/>` : ''}</w:pPr>`
+          : '';
+        body.push(`<w:p>${ppr}<w:r><w:rPr>${rpr.join('')}</w:rPr><w:t xml:space="preserve">${DocxW.esc(line)}</w:t></w:r></w:p>`);
       }
     }
     const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -5167,7 +5170,9 @@ async function runOcr(doc, pages, lang, prog, dpi){
     prog._pct = 10 + i / pages.length * 85;
     prog.set(prog._pct, `OCR page ${pages[i]} / ${doc.numPages}…`);
     const c = await PdfX.renderPage(doc, pages[i], document.createElement('canvas'), (dpi || 180) / 72, 0, 2600);
-    const {data} = await worker.recognize(c, {}, {text: true, blocks: true});
+    // erase table ruling lines first — Tesseract otherwise skips ruled tables as line-art
+    const oc = (typeof OcrTables !== 'undefined' && OcrTables.eraseRulingLines) ? OcrTables.eraseRulingLines(c) : c;
+    const {data} = await worker.recognize(oc, {}, {text: true, blocks: true});
     let words = [];
     try{
       if(data.blocks) for(const b of data.blocks) for(const p of (b.paragraphs || [])) for(const l of (p.lines || [])) for(const w of (l.words || [])) words.push({text: w.text, bbox: w.bbox});
@@ -7232,15 +7237,24 @@ const PdfTextEdit = {
   },
 
   /* tokenize a content stream; returns show-operator occurrences:
-     [{op:'Tj'|'TJ'|"'", text, start, end}] with byte offsets in `src` */
+     [{op:'Tj'|'TJ'|"'", text, start, end, font:{res,size}}] with byte offsets in `src`.
+     Tf operators are tracked so every op knows which font resource drew it. */
   findShowOps(src){
     const ops = [];
     let i = 0, n = src.length;
+    let curFont = null, lastName = null, lastNum = null;
     const isWs = c => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f' || c === '\0';
     while(i < n){
       const c = src[i];
       if(isWs(c)){ i++; continue; }
       if(c === '%'){ while(i < n && src[i] !== '\n') i++; continue; }
+      if(c === '/'){ // name token — remember for Tf
+        let j = i + 1;
+        while(j < n && !isWs(src[j]) && '()<>[]{}/%'.indexOf(src[j]) < 0) j++;
+        lastName = src.slice(i + 1, j);
+        i = j > i ? j : i + 1;
+        continue;
+      }
       if(c === '('){ // literal string (nesting + escapes)
         let depth = 1, buf = '', j = i + 1;
         while(j < n && depth > 0){
@@ -7272,8 +7286,8 @@ const PdfTextEdit = {
         // operator follows after optional whitespace
         let k = end; while(k < n && isWs(src[k])) k++;
         const op = src.substr(k, 3);
-        if(op.startsWith('Tj')) ops.push({op: 'Tj', text: this.pdfStringToText(buf), start: i, end: k + 2});
-        else if(op.startsWith("'") || op.startsWith('"')) ops.push({op: op[0], text: this.pdfStringToText(buf), start: i, end: k + 1});
+        if(op.startsWith('Tj')) ops.push({op: 'Tj', text: this.pdfStringToText(buf), start: i, end: k + 2, font: curFont});
+        else if(op.startsWith("'") || op.startsWith('"')) ops.push({op: op[0], text: this.pdfStringToText(buf), start: i, end: k + 1, font: curFont});
         i = end;
         continue;
       }
@@ -7285,7 +7299,7 @@ const PdfTextEdit = {
         if(hex.length % 2) raw += String.fromCharCode(parseInt(hex[hex.length - 1], 16) * 16);
         let k = close < 0 ? n : close + 1; while(k < n && isWs(src[k])) k++;
         const op = src.substr(k, 2);
-        if(op === 'Tj') ops.push({op: 'Tj', text: this.pdfStringToText(raw), start: i, end: k + 2});
+        if(op === 'Tj') ops.push({op: 'Tj', text: this.pdfStringToText(raw), start: i, end: k + 2, font: curFont});
         i = close < 0 ? n : close + 1;
         continue;
       }
@@ -7351,13 +7365,111 @@ const PdfTextEdit = {
         }
         i = j; continue;
       }
-      if(c === '/' || c === '<' || c === ']' || c === '>' || c === '{' || c === '}'){ i++; continue; }
-      // number or operator: skip token
+      if(c === ']' || c === '>' || c === '{' || c === '}'){ i++; continue; }
+      if(c === '<' && src[i + 1] === '<'){ i += 2; continue; } // dictionary
+      // number or operator: read the whole token
       let j = i;
       while(j < n && !isWs(src[j]) && '()<>[]{}/%'.indexOf(src[j]) < 0) j++;
+      const tok = j > i ? src.slice(i, j) : src[i];
       i = j > i ? j : i + 1;
+      if(/^[-+]?[\d.]+$/.test(tok)){ lastNum = parseFloat(tok); }
+      else if(tok === 'Tf' && lastName){ curFont = {res: lastName, size: lastNum != null ? lastNum : (curFont && curFont.size) || null}; }
+      else if(/^[A-Za-z'"*]+$/.test(tok)){ lastName = null; }
     }
     return ops;
+  },
+
+  /* find the show-op run (or run window) that produced `target`; used both for
+     removal and for font identification */
+  matchOps(ops, target){
+    const tNorm = this.norm(target);
+    if(!tNorm || !ops.length) return [];
+    // pass 1: whole target inside one op
+    let hits = ops.filter(o => this.norm(o.text) === tNorm);
+    // pass 2: target split across consecutive ops (words/chars in separate ops)
+    if(!hits.length){
+      const texts = ops.map(o => this.norm(o.text));
+      for(let i = 0; i < ops.length; i++){
+        let acc = '';
+        for(let j = i; j < ops.length; j++){
+          acc = this.norm(acc + ' ' + texts[j]);
+          if(acc === tNorm){ hits = ops.slice(i, j + 1); break; }
+          if(acc.length > tNorm.length + 2) break;
+        }
+        if(hits.length) break;
+      }
+    }
+    // pass 3: kerned/char-split ops concatenated WITHOUT separators
+    if(!hits.length){
+      for(let i = 0; i < ops.length; i++){
+        let accNs = '';
+        for(let j = i; j < ops.length; j++){
+          accNs += ops[j].text;
+          if(this.norm(accNs) === tNorm){ hits = ops.slice(i, j + 1); break; }
+          if(accNs.length > tNorm.length + 4) break;
+        }
+        if(hits.length) break;
+      }
+    }
+    // never match a single op that merely CONTAINS the target with extra text —
+    // removing it would delete unrelated glyphs
+    return hits;
+  },
+
+  /* map a page's font resource names to their real BaseFont names */
+  async pageFontMap(pdfDoc, pageIdx){
+    const out = {};
+    try{
+      const page = pdfDoc.getPage(pageIdx - 1);
+      const node = page.node;
+      let resDict = null;
+      try{ if(node.normalizedEntries) resDict = node.normalizedEntries().Resources || null; }catch(e){}
+      if(!resDict){
+        const r = node.get(PDFLib.PDFName.of('Resources'));
+        if(r) resDict = pdfDoc.context.lookup(r);
+      }
+      if(resDict && !(resDict instanceof PDFLib.PDFDict) && resDict.dict) resDict = resDict.dict;
+      if(!resDict || !(resDict instanceof PDFLib.PDFDict)) return out;
+      const fRef = resDict.get(PDFLib.PDFName.of('Font'));
+      if(!fRef) return out;
+      const fontDict = pdfDoc.context.lookup(fRef);
+      if(!fontDict || !(fontDict instanceof PDFLib.PDFDict)) return out;
+      for(const [k, v] of fontDict.entries()){
+        const fd = pdfDoc.context.lookup(v);
+        const d = fd && fd.dict ? fd.dict : fd;
+        const base = d && d.get ? d.get(PDFLib.PDFName.of('BaseFont')) : null;
+        if(base && base.asString){
+          out[k.asString().replace(/^\//, '')] = base.asString().replace(/^\//, '').replace(/^[A-Z]{6}\+/, '');
+        }
+      }
+    }catch(e){ /* font map is best-effort */ }
+    return out;
+  },
+
+  /* identify the real font behind a piece of text (for the editor panel) */
+  async describeText(bytes, pageIdx, target){
+    try{
+      if(!this._inspectDoc || this._inspectKey !== bytes.length + ':' + bytes[0] + bytes[1]){
+        this._inspectDoc = await PDFLib.PDFDocument.load(bytes, {ignoreEncryption: false, updateMetadata: false});
+        this._inspectKey = bytes.length + ':' + bytes[0] + bytes[1];
+        this._inspectCache = new Map();
+      }
+      let cache = this._inspectCache.get(pageIdx);
+      if(!cache){
+        const cs = await this.pageContentStreams(this._inspectDoc, pageIdx);
+        cache = {ops: cs ? this.findShowOps(cs.text) : [], map: await this.pageFontMap(this._inspectDoc, pageIdx)};
+        this._inspectCache.set(pageIdx, cache);
+      }
+      const hits = this.matchOps(cache.ops, target);
+      if(!hits.length || !hits[0].font) return null;
+      const base = cache.map[hits[0].font.res] || null;
+      const s = base || '';
+      const bold = /bold|black|heavy|semibold/i.test(s);
+      const italic = /italic|oblique/i.test(s);
+      const family = /courier|mono/i.test(s) ? 'Courier'
+        : (/times|georgia|garamond|book|serif/i.test(s) && !/sans/i.test(s)) ? 'Times' : 'Helvetica';
+      return {base, family, bold, italic, size: hits[0].font.size, resource: hits[0].font.res};
+    }catch(e){ return null; }
   },
 
   /* get the full decoded content stream of a page (concatenating array parts) */
@@ -7391,26 +7503,7 @@ const PdfTextEdit = {
   /* try to remove every show-op occurrence of `target` inside a page stream */
   attemptRemove(streamText, target){
     const ops = this.findShowOps(streamText);
-    if(!ops.length) return null;
-    const tNorm = this.norm(target);
-    if(!tNorm) return null;
-    // pass 1: whole target inside one op
-    let hits = ops.filter(o => this.norm(o.text) === tNorm);
-    // pass 2: target split across a run of consecutive ops (whitespace-separated)
-    if(!hits.length){
-      const texts = ops.map(o => this.norm(o.text));
-      for(let i = 0; i < ops.length; i++){
-        let acc = '';
-        for(let j = i; j < ops.length; j++){
-          acc = this.norm(acc + ' ' + texts[j]);
-          if(acc === tNorm){ hits = ops.slice(i, j + 1); break; }
-          if(acc.length > tNorm.length + 2) break;
-        }
-        if(hits.length) break;
-      }
-    }
-    // pass 3: single op that CONTAINS the target with extra text — not removed
-    // (would delete unrelated glyphs); caller falls back to redaction.
+    const hits = this.matchOps(ops, target);
     if(!hits.length) return null;
     // cut byte ranges (from last to first so offsets stay valid)
     hits.sort((a, b) => b.start - a.start);
@@ -7526,8 +7619,12 @@ const PdfTextEdit = {
 /* ================================================================================
    OCR tables — detect table regions in OCR results and emit real Word tables.
    Two detectors are combined:
-     A) ruled-line grid: long horizontal/vertical dark runs on the page raster
-     B) position clustering: reuses the app's Tables.detect for borderless tables
+     A) ruled-line grid: horizontal runs + vertical column density on the raster
+        (density-based verticals survive anti-aliased thin lines)
+     B) position clustering: reuses Tables.detect AFTER converting raster px to
+        PDF points, so its tolerances work as designed
+   Everything is quality-gated: a low-confidence region is emitted as plain
+   paragraphs instead, so text is never swallowed by an empty table.
    ================================================================================ */
 
 /* drop stray single-column lines chained onto the first/last row of a table */
@@ -7542,42 +7639,59 @@ Tables.trimRaggedRows = function(rows, minCols){
 };
 
 const OcrTables = {
-  /* words: [{text, bbox:{x0,y0,x1,y1}}] in raster px; canvas: the page raster */
+  /* words: [{text, bbox:{x0,y0,x1,y1}}] in raster px; canvas: the page raster.
+     opts.ptScale = 72/dpi (px -> pt). Returned bbox values are in pt. */
   detect(words, canvas, opts){
-    const o = Object.assign({minRows: 2, minCols: 2}, opts || {});
+    const o = Object.assign({minRows: 2, minCols: 2, ptScale: 0.4}, opts || {});
     const found = [];
     try{ this._grid(words, canvas, o, found); }catch(e){ console.warn('grid detect failed', e); }
     try{ this._cluster(words, o, found); }catch(e){ /* optional */ }
+    found.sort((a, b) => a.bbox.y0 - b.bbox.y0);
     return found;
   },
 
-  _wordsItems(words){
+  _wordsItems(words, ptScale){
     return words.filter(w => w.text && String(w.text).trim())
-      .map(w => ({str: String(w.text), x: w.bbox.x0, y: w.bbox.y0,
-        w: w.bbox.x1 - w.bbox.x0, fs: Math.max(6, w.bbox.y1 - w.bbox.y0)}));
+      .map(w => ({str: String(w.text), x: w.bbox.x0 * ptScale, y: w.bbox.y0 * ptScale,
+        w: (w.bbox.x1 - w.bbox.x0) * ptScale, fs: Math.max(5, (w.bbox.y1 - w.bbox.y0) * ptScale)}));
   },
 
-  /* detector B — borderless tables via existing clustering */
+  /* detector B — borderless tables via existing clustering, in pt-space */
   _cluster(words, o, found){
-    const items = this._wordsItems(words);
+    const items = this._wordsItems(words, o.ptScale);
     if(items.length < 4) return;
     const tables = Tables.detect(items, {minCols: o.minCols, minRows: o.minRows});
     for(const t of tables){
       if(!t.rows || t.rows.length < o.minRows) continue;
+      const rowsT = Tables.trimRaggedRows(t.rows, o.minCols);
+      if(rowsT.length < o.minRows) continue;
       const inside = items.filter(it => it.y >= t.y0 - 2 && it.y <= t.y1 + 2);
       if(!inside.length) continue;
       const bbox = {
-        x0: Math.min(...inside.map(i => i.x)),
-        x1: Math.max(...inside.map(i => i.x + i.w)),
+        x0: Math.min(...inside.map(i => i.x)) - 4,
+        x1: Math.max(...inside.map(i => i.x + i.w)) + 4,
         y0: t.y0, y1: t.y1,
       };
-      if(found.some(f => !(t.y1 < f.bbox.y0 - 6 || t.y0 > f.bbox.y1 + 6))) continue; // already covered by grid
-      const rowsT = Tables.trimRaggedRows(t.rows, o.minCols);
-      if(rowsT.length >= o.minRows) found.push({bbox, rows: rowsT});
+      if(found.some(f => !(t.y1 < f.bbox.y0 - 6 || t.y0 > f.bbox.y1 + 6))) continue; // covered by grid
+      if(!this._quality(rowsT, o)) continue;
+      found.push({bbox, rows: rowsT});
     }
   },
 
-  /* detector A — ruled-line grid on the raster */
+  /* a table block is only emitted when it actually reads as a table */
+  _quality(rows, o){
+    if(rows.length < o.minRows) return false;
+    const cols = Math.max(...rows.map(r => r.length));
+    if(cols < o.minCols) return false;
+    const cells = rows.length * cols;
+    const filled = rows.reduce((s, r2) => s + r2.filter(v => String(v == null ? '' : v).trim()).length, 0);
+    if(filled / cells < 0.5) return false;
+    const multi = rows.filter(r2 => r2.filter(v => String(v == null ? '' : v).trim()).length >= 2).length;
+    if(multi < Math.max(2, Math.ceil(rows.length * 0.5))) return false;
+    return true;
+  },
+
+  /* detector A — ruled-line grid on the raster (px), bbox returned in pt */
   _grid(words, canvas, o, found){
     if(!canvas || !canvas.width) return;
     const scale = Math.min(1, 1100 / canvas.width);
@@ -7592,15 +7706,15 @@ const OcrTables = {
     const ctx = src.getContext('2d');
     const W = src.width, H = src.height;
     const img = ctx.getImageData(0, 0, W, H).data;
-    const lum = i => 0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2];
-    const minRunH = Math.max(40, Math.round(W * 0.3));
-    // horizontal lines
+    const dark = i => (0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2]) < 160;
+    // horizontal lines: long CONSECUTIVE dark runs per row (text cannot do this)
     const hRows = [];
+    const minRunH = Math.max(40, Math.round(W * 0.3));
     for(let y = 0; y < H; y++){
       let run = 0, best = 0;
       const off = y * W * 4;
       for(let x = 0; x < W; x++){
-        if(lum(off + x * 4) < 150){ run++; if(run > best) best = run; }
+        if(dark(off + x * 4)){ run++; if(run > best) best = run; }
         else run = 0;
       }
       if(best >= minRunH) hRows.push(y);
@@ -7609,49 +7723,125 @@ const OcrTables = {
     if(hLines.length < 3) return;
     const regionY0 = hLines[0], regionY1 = hLines[hLines.length - 1];
     const regionH = regionY1 - regionY0;
-    if(regionH < 24) return;
-    // vertical lines inside the region
-    const vCols = [];
-    const minRunV = Math.max(20, Math.round(regionH * 0.55));
-    for(let x = 0; x < W; x++){
-      let run = 0, best = 0;
-      for(let y = regionY0; y <= regionY1; y++){
-        if(lum((y * W + x) * 4) < 150){ run++; if(run > best) best = run; }
-        else run = 0;
-      }
-      if(best >= minRunV) vCols.push(x);
+    if(regionH < 20) return;
+    // vertical lines: dark-pixel DENSITY per column inside the region.
+    // (consecutive-run counting breaks on anti-aliased 2px lines straddling two
+    // columns — density survives that)
+    const colDensity = new Float32Array(W);
+    for(let y = regionY0; y <= regionY1; y++){
+      const off = y * W * 4;
+      for(let x = 0; x < W; x++) if(dark(off + x * 4)) colDensity[x]++;
     }
-    const vLines = this._cluster1D(vCols, 3);
+    const need = regionH * 0.45;
+    const vCols = [];
+    for(let x = 0; x < W; x++) if(colDensity[x] >= need) vCols.push(x);
+    const vLines = this._cluster1D(vCols, 4);
     if(vLines.length < 3) return;
-    // build cells
+    // build cells (px space)
     const rows = [];
     for(let r = 0; r + 1 < hLines.length; r++){
       const top = hLines[r] + 2, bot = hLines[r + 1] - 2;
-      if(bot - top < 6) continue;
+      if(bot - top < 5) continue;
       const row = [];
       for(let c = 0; c + 1 < vLines.length; c++){
         const left = vLines[c] + 2, right = vLines[c + 1] - 2;
-        const cellWords = words.filter(w => w.text && String(w.text).trim() && (() => {
+        const inCell = [];
+        for(const w of words){
+          if(!w.text || !String(w.text).trim()) continue;
           const cx = (w.bbox.x0 + w.bbox.x1) / 2, cy = (w.bbox.y0 + w.bbox.y1) / 2;
-          return cx >= left / scale && cx <= right / scale && cy >= top / scale && cy <= bot / scale;
-        })());
-        row.push(cellWords.sort((a, b) => a.bbox.x0 - b.bbox.x0).map(w => String(w.text).trim()).join(' ').trim());
+          if(cx >= left / scale && cx <= right / scale && cy >= top / scale && cy <= bot / scale) inCell.push(w);
+        }
+        inCell.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+        row.push(inCell.map(w => String(w.text).trim()).join(' ').trim());
       }
       rows.push(row);
     }
     const dataRows = rows.filter(r2 => r2.length >= o.minCols);
     if(dataRows.length < o.minRows) return;
-    const cells = dataRows.length * dataRows[0].length;
-    const filled = dataRows.reduce((s, r2) => s + r2.filter(v => v).length, 0);
-    if(cells && filled / cells < 0.4) return;
-    // require at least one 2-column band with two different texts (avoid false grids on underlines)
-    const colVariety = dataRows.filter(r2 => new Set(r2.slice(0, 3)).size >= 2).length;
-    if(colVariety < 1) return;
+    if(!this._quality(dataRows, o)) return;
     found.push({
-      bbox: {x0: vLines[0] / scale, x1: vLines[vLines.length - 1] / scale,
-             y0: hLines[0] / scale, y1: hLines[hLines.length - 1] / scale},
+      bbox: {x0: vLines[0] / scale * o.ptScale, x1: vLines[vLines.length - 1] / scale * o.ptScale,
+             y0: hLines[0] / scale * o.ptScale, y1: hLines[hLines.length - 1] / scale * o.ptScale},
       rows: dataRows,
     });
+  },
+
+  /* erase long ruling lines from a page raster so Tesseract reads table cells
+     instead of classifying the whole table as line-art. Returns a NEW canvas. */
+  eraseRulingLines(canvas){
+    const out = document.createElement('canvas');
+    out.width = canvas.width; out.height = canvas.height;
+    const ctx = out.getContext('2d', {willReadFrequently: true});
+    ctx.drawImage(canvas, 0, 0);
+    try{
+      const W = out.width, H = out.height;
+      const img = ctx.getImageData(0, 0, W, H);
+      const d = img.data;
+      const lum = i => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      const minRun = Math.max(30, Math.round(W * 0.22));
+      for(let y = 0; y < H; y++){ // horizontal rulings
+        const off = y * W * 4;
+        let run = 0, start = -1;
+        for(let x = 0; x <= W; x++){
+          const dk = x < W && lum(off + x * 4) < 165;
+          if(dk){ if(run === 0) start = x; run++; }
+          else if(run > 0){
+            if(run >= minRun){
+              for(let yy = Math.max(0, y - 2); yy <= Math.min(H - 1, y + 2); yy++){
+                const o2 = yy * W * 4;
+                for(let xx = Math.max(0, start - 2); xx <= Math.min(W - 1, start + run + 2); xx++){
+                  d[o2 + xx * 4] = 255; d[o2 + xx * 4 + 1] = 255; d[o2 + xx * 4 + 2] = 255; d[o2 + xx * 4 + 3] = 255;
+                }
+              }
+            }
+            run = 0;
+          }
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      const img2 = ctx.getImageData(0, 0, W, H); // vertical rulings (on h-erased image)
+      const d2 = img2.data;
+      const lum2 = i => 0.2126 * d2[i] + 0.7152 * d2[i + 1] + 0.0722 * d2[i + 2];
+      const density = new Float32Array(W);
+      let darkRows = 0;
+      for(let y = 0; y < H; y++){
+        const off = y * W * 4;
+        let rowHas = false;
+        for(let x = 0; x < W; x++){ if(lum2(off + x * 4) < 165){ density[x]++; rowHas = true; } }
+        if(rowHas) darkRows++;
+      }
+      const need = darkRows * 0.5;
+      const vCols = [];
+      for(let x = 0; x < W; x++) if(density[x] >= need) vCols.push(x);
+      const bands = this._cluster1D(vCols, 4);
+      for(const bx of bands){
+        // erase only LONG CONTIGUOUS dark runs in the band — a ruling is hundreds
+        // of px tall while glyphs crossing the column are short, so text elsewhere
+        // in the column survives
+        const runs = [];
+        let rStart = -1, rLen = 0, gap = 0;
+        for(let y = 0; y < H; y++){
+          const off = y * W * 4;
+          let hit = false;
+          for(let xx = Math.max(0, bx - 2); xx <= Math.min(W - 1, bx + 2); xx++){
+            if(lum2(off + xx * 4) < 165){ hit = true; break; }
+          }
+          if(hit){ if(rStart < 0) rStart = y; rLen++; gap = 0; }
+          else if(rStart >= 0){ gap++; if(gap > 6){ if(rLen >= 60) runs.push([rStart, rStart + rLen]); rStart = -1; rLen = 0; gap = 0; } }
+        }
+        if(rStart >= 0 && rLen >= 60) runs.push([rStart, rStart + rLen]);
+        for(const [r0, r1] of runs){
+          for(let yy = Math.max(0, r0 - 2); yy <= Math.min(H - 1, r1 + 2); yy++){
+            const o2 = yy * W * 4;
+            for(let xx = Math.max(0, bx - 2); xx <= Math.min(W - 1, bx + 2); xx++){
+              d2[o2 + xx * 4] = 255; d2[o2 + xx * 4 + 1] = 255; d2[o2 + xx * 4 + 2] = 255; d2[o2 + xx * 4 + 3] = 255;
+            }
+          }
+        }
+      }
+      ctx.putImageData(img2, 0, 0);
+    }catch(e){ console.warn('line erase failed', e); }
+    return out;
   },
 
   _cluster1D(vals, tol){
@@ -7665,37 +7855,62 @@ const OcrTables = {
   },
 };
 
-/* Build a Word document from OCR results: reading-order paragraphs + real tables */
+/* Build a Word document from OCR results: grouped paragraphs + real tables.
+   Works entirely in PDF-point space so sizes/alignment map to Word naturally. */
 async function buildOcrWordDocx(ocr, file, prog, dpi){
   if(typeof DocxW === 'undefined' || !ocr || !ocr.length) return null;
   const base = U.sanitizeName(U.baseName(file.name));
-  const pxToPt = dpi > 0 ? 72 / dpi : 0.4;
+  const ptScale = dpi > 0 ? 72 / dpi : 0.4;
   const blocks = [];
   let tablesFound = 0;
   for(let pi = 0; pi < ocr.length; pi++){
     const r = ocr[pi];
     if(prog) prog.set(prog._pct, `Building Word page ${pi + 1}…`);
-    const items = OcrTables._wordsItems(r.words || []);
-    const tables = r.words && r.words.length ? OcrTables.detect(r.words, r.canvas) : [];
-    tablesFound += tables.length;
+    const pageWpt = r.canvas ? r.canvas.width * ptScale : 595;
+    const items = OcrTables._wordsItems(r.words || [], ptScale);
+    const tables = (r.words && r.words.length) ? OcrTables.detect(r.words, r.canvas, {ptScale}) : [];
+    const emitted = tables.filter(t => t.rows && t.rows.length >= 2 && (t.rows[0] || []).length >= 2);
+    tablesFound += emitted.length;
     const lines = items.length ? groupTextLines(items) : [];
-    tables.sort((a, b) => a.bbox.y0 - b.bbox.y0);
-    const medFs = lines.length ? lines.map(l => l.fs).sort((a, b) => a - b)[Math.floor(lines.length / 2)] : 20;
-    let ti = 0; // next table to emit
-    for(const l of lines){
-      while(ti < tables.length && tables[ti].bbox.y0 <= l.y){
-        const t = tables[ti++];
-        blocks.push({t: 'table', rows: t.rows});
-      }
-      const inTable = tables.some(tb => l.y >= tb.bbox.y0 - 2 && l.y <= tb.bbox.y1 + 2
-        && l.x0 >= tb.bbox.x0 - 14 && l.x0 <= tb.bbox.x1 + 14);
-      if(inTable) continue;
-      if(!l.str || !l.str.trim()) continue;
-      const pt = Math.max(8, Math.min(22, Math.round(l.fs * pxToPt)));
-      if(l.fs > medFs * 1.35 && l.str.length < 90) blocks.push({t: 'h2', text: l.str});
-      else blocks.push({t: 'p', text: l.str, size: pt});
+    const medFs = lines.length ? lines.map(l => l.fs).sort((a, b) => a - b)[Math.floor(lines.length / 2)] : 11;
+
+    // alignment inference per line (center / right / null=left)
+    function alignOf(l){
+      const xs = l.items.map(it => it.x), xe = l.items.map(it => it.x + it.w);
+      const x0 = Math.min(...xs), x1 = Math.max(...xe), wpt = x1 - x0;
+      const center = x0 + wpt / 2;
+      if(Math.abs(center - pageWpt / 2) < pageWpt * 0.075 && wpt < pageWpt * 0.62) return 'center';
+      if(x1 > pageWpt * 0.8 && x0 > pageWpt * 0.45) return 'right';
+      return null;
     }
-    while(ti < tables.length){ blocks.push({t: 'table', rows: tables[ti++].rows}); }
+
+    // merge consecutive plain lines into paragraphs (keeps the reading flow)
+    let ti = 0;
+    let para = null, paraSize = 11, paraAlign = null;
+    const flushPara = () => { if(para != null){ blocks.push({t: 'p', text: para, size: paraSize, align: paraAlign || undefined}); para = null; } };
+    for(let li = 0; li < lines.length; li++){
+      const l = lines[li];
+      while(ti < emitted.length && emitted[ti].bbox.y0 <= l.y){
+        flushPara();
+        blocks.push({t: 'table', rows: emitted[ti++].rows});
+      }
+      const ownTable = emitted.some(tb => l.y >= tb.bbox.y0 - 3 && l.y <= tb.bbox.y1 + 3
+        && l.x0 >= tb.bbox.x0 - 16 && l.x0 <= tb.bbox.x1 + 16);
+      if(ownTable){ flushPara(); continue; }
+      if(!l.str || !l.str.trim()){ flushPara(); continue; }
+      const isHeading = l.fs > medFs * 1.3 && l.str.length < 90;
+      if(isHeading){
+        flushPara();
+        blocks.push({t: l.fs > medFs * 1.8 ? 'h1' : 'h2', text: l.str, align: alignOf(l) || undefined});
+        continue;
+      }
+      const gapOk = para != null && li > 0 && (l.y - lines[li - 1].y) < Math.max(18, lines[li - 1].fs * 1.75);
+      const sizeOk = para != null && Math.abs(l.fs - paraSize) <= Math.max(1.5, paraSize * 0.25);
+      if(para != null && gapOk && sizeOk && !paraAlign){ para += ' ' + l.str.trim(); }
+      else { flushPara(); para = l.str.trim(); paraSize = Math.max(8, Math.min(20, Math.round(l.fs))); paraAlign = alignOf(l); }
+    }
+    flushPara();
+    while(ti < emitted.length){ blocks.push({t: 'table', rows: emitted[ti++].rows}); }
     if(pi < ocr.length - 1) blocks.push({t: 'pagebreak'});
     await U.sleep(0);
   }
@@ -7827,6 +8042,36 @@ function PdfTE_sampleColor(canvas, rect, k, mode){ // mode 'text' | 'cover'
 function PdfTE_hex(c){ // {r,g,b} 0..1 -> #rrggbb
   const h = v => Math.round(v * 255).toString(16).padStart(2, '0');
   return '#' + h(c.r) + h(c.g) + h(c.b);
+}
+/* actual ink bounding box of a text element on the rendered page (scale-1 coords).
+   Scans a padded region for pixels differing from the sampled background —
+   guarantees the redaction patch fully hides the original glyphs (no half-text). */
+function PdfTE_inkRect(canvas, item, k, bg){
+  try{
+    const ctx = canvas.getContext('2d');
+    const padX = Math.max(4, item.fs * 0.6), padY = Math.max(4, item.fs * 0.5);
+    const rx0 = Math.max(0, Math.floor((item.x - padX) * k));
+    const ry0 = Math.max(0, Math.floor((item.baselineY - item.fs * item.ascent - padY) * k));
+    const rx1 = Math.min(canvas.width, Math.ceil((item.x + item.w + padX) * k));
+    const ry1 = Math.min(canvas.height, Math.ceil((item.baselineY - item.fs * item.descent + padY) * k));
+    const iw = Math.max(1, rx1 - rx0), ih = Math.max(1, ry1 - ry0);
+    const d = ctx.getImageData(rx0, ry0, iw, ih).data;
+    const br = bg.r * 255, bgc = bg.g * 255, bb = bg.b * 255;
+    let minX = -1, minY = -1, maxX = -1, maxY = -1;
+    for(let yy = 0; yy < ih; yy++){
+      for(let xx = 0; xx < iw; xx++){
+        const i = (yy * iw + xx) * 4;
+        if(Math.abs(d[i] - br) + Math.abs(d[i + 1] - bgc) + Math.abs(d[i + 2] - bb) > 96){
+          if(minX < 0 || xx < minX) minX = xx;
+          if(xx > maxX) maxX = xx;
+          if(minY < 0 || yy < minY) minY = yy;
+          if(yy > maxY) maxY = yy;
+        }
+      }
+    }
+    if(maxX < 0) return null;
+    return {x0: (rx0 + minX) / k, y0: (ry0 + minY) / k, x1: (rx0 + maxX + 1) / k, y1: (ry0 + maxY + 1) / k};
+  }catch(e){ return null; }
 }
 function PdfTE_unhex(s){ // -> {r,g,b} 0..1
   const v = parseInt(String(s).replace('#', ''), 16);
@@ -8000,10 +8245,19 @@ async function PdfTE_open(file){
   /* ---------- geometry for an edit (user-space, rotation-safe) ---------- */
   function geometryFor(item){
     const {vp} = S.pageCache.get(S.cur);
-    const pad = Math.max(1, item.fs * 0.14);
-    const bx0 = item.x - pad, bx1 = item.x + item.w + pad;
-    const by0 = item.baselineY - item.fs * item.ascent - pad;
-    const by1 = item.baselineY - item.fs * item.descent + pad;
+    const k = S.scale;
+    const rough = {x0: item.x, x1: item.x + item.w, y0: item.baselineY - item.fs * item.ascent, y1: item.baselineY - item.fs * item.descent};
+    // cover the REAL ink extents (not just the estimated box) so no glyph
+    // fragment survives a redaction patch
+    let cov = rough;
+    try{
+      const bg = PdfTE_sampleColor(canvas, rough, k, 'cover');
+      const ink = PdfTE_inkRect(canvas, item, k, bg);
+      if(ink) cov = ink;
+    }catch(e){}
+    const pad = Math.max(2, item.fs * 0.18);
+    const bx0 = cov.x0 - pad, bx1 = cov.x1 + pad;
+    const by0 = cov.y0 - pad, by1 = cov.y1 + pad;
     const [px0, py0] = PdfTE_pdfPoint(vp, item.x, item.baselineY);           // replacement origin (baseline start)
     const [cx0, cy0] = PdfTE_pdfPoint(vp, bx0, by0);                         // cover rect corner (top-left in view)
     const [cx1, cy1] = PdfTE_pdfPoint(vp, bx1, by0);
@@ -8012,7 +8266,7 @@ async function PdfTE_open(file){
     const h = Math.hypot(cx2 - cx0, cy2 - cy0);
     const rotDeg = Math.atan2(cy1 - cy0, cx1 - cx0) * 180 / Math.PI;
     return {
-      bbox: {x0: item.x, x1: item.x + item.w, y0: by0, y1: by1},
+      bbox: rough,
       baselineY: item.baselineY, fs: item.fs,
       pdfX: px0, pdfY: py0,
       cover: {x: cx0, y: cy0, w, h, rot: rotDeg},
@@ -8093,30 +8347,40 @@ async function PdfTE_open(file){
   }
 
   /* ---------- selection + right panel ---------- */
-  function selectItem(item){
+  async function selectItem(item){
     S.selected = item;
     qsa('.edt-item.sel', olay).forEach(x => x.classList.remove('sel'));
     const box = qs(`.edt-item[data-key="${item.key}"]`, olay);
     if(box) box.classList.add('sel');
     const k = S.scale;
-    const pd = S.pageCache.get(S.cur);
     const rect = {x0: item.x, x1: item.x + item.w, y0: item.baselineY - item.fs * item.ascent, y1: item.baselineY - item.fs * item.descent};
     const textColor = PdfTE_sampleColor(canvas, rect, k, 'text');
     const coverColor = PdfTE_sampleColor(canvas, rect, k, 'cover');
     const g = geometryFor(item);
-    const famGuess = /courier|mono/i.test(item.fam) ? 'Courier' : /times|georgia|garamond|serif/i.test(item.fam) && !/sans/i.test(item.fam) ? 'Times' : 'Helvetica';
+    // identify the real font from the content stream (Tf + BaseFont)
+    let desc = null;
+    try{ desc = await PdfTextEdit.describeText(S.origBytes, S.cur, item.str); }catch(e){}
+    const famGuess = desc && desc.family ? desc.family
+      : /courier|mono/i.test(item.fam) ? 'Courier' : /times|georgia|garamond|serif/i.test(item.fam) && !/sans/i.test(item.fam) ? 'Times' : 'Helvetica';
+    const fontLabel = desc && desc.base
+      ? `${desc.base}${desc.bold ? ' Bold' : ''}${desc.italic ? ' Italic' : ''}`
+      : (item.fam && item.fam !== 'sans-serif' ? item.fam : 'standard font');
+    const famOpts = [
+      ['Helvetica', 'Helvetica'], ['Times', 'Times'], ['Courier', 'Courier'],
+    ].map(([v, l]) => `<option value="${v}"${v === famGuess ? ' selected' : ''}>${l}${v === famGuess && desc && desc.base ? ' — closest to ' + U.esc(desc.base) : ''}</option>`).join('');
     props.innerHTML = `
       <h5>Edit text</h5>
       ${item.limited ? `<div class="edt-warn warn" style="font-size:11.5px">${ic('alert-triangle')}<span>This element uses an unusual font encoding. The replacement will use the closest standard font.</span></div>` : ''}
       <span class="fl">Original text</span>
       <div class="edt-orig">${U.esc(item.str)}</div>
+      <div class="edt-status" style="margin-top:4px">Original font: <b>${U.esc(fontLabel)}</b>${desc && desc.size ? ' · ' + Math.round(desc.size * 10) / 10 + 'pt' : ''}</div>
       <span class="fl">Replacement text</span>
       <textarea id="ep-new">${U.esc(item.str)}</textarea>
       <div class="edt-row">
         <div><span class="fl">Font family</span>
-          <select id="ep-fam"><option value="auto" selected>Auto (${famGuess})</option><option value="Helvetica">Helvetica</option><option value="Times">Times</option><option value="Courier">Courier</option></select></div>
+          <select id="ep-fam">${famOpts}</select></div>
         <div style="max-width:80px"><span class="fl">Size</span>
-          <input type="number" id="ep-size" value="${Math.round(item.fs * 10) / 10}" step="0.5" min="2" max="96"></div>
+          <input type="number" id="ep-size" value="${desc && desc.size ? Math.round(desc.size * 10) / 10 : Math.round(item.fs * 10) / 10}" step="0.5" min="2" max="96"></div>
       </div>
       <div class="edt-row">
         <div><span class="fl">Colour</span>
@@ -8125,8 +8389,8 @@ async function PdfTE_open(file){
           <select id="ep-align"><option value="left" selected>Left</option><option value="center">Center</option><option value="right">Right</option></select></div>
       </div>
       <div class="edt-row" style="align-items:center;margin-top:2px">
-        <label style="font-size:12.5px;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ep-bold"> Bold</label>
-        <label style="font-size:12.5px;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ep-italic"> Italic</label>
+        <label style="font-size:12.5px;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ep-bold"${desc && desc.bold ? ' checked' : ''}> Bold</label>
+        <label style="font-size:12.5px;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ep-italic"${desc && desc.italic ? ' checked' : ''}> Italic</label>
         <button class="btn sm" id="ep-cancel" style="margin-left:auto">Cancel</button>
         <button class="btn sm primary" id="ep-apply">${ic('check')} Apply</button>
       </div>
@@ -8138,7 +8402,7 @@ async function PdfTE_open(file){
       const edit = Object.assign({
         id: 'e' + Date.now() + Math.random().toString(36).slice(2, 6),
         page: S.cur, key: item.key, original: item.str, replacement,
-        fontFamily: qs('#ep-fam').value, origFont: item.fontName + ' ' + item.fam,
+        fontFamily: qs('#ep-fam').value, origFont: (desc && desc.base ? desc.base : item.fontName + ' ' + item.fam),
         fs: Math.max(2, parseFloat(qs('#ep-size').value) || item.fs),
         color: PdfTE_unhex(qs('#ep-color').value),
         coverColor, align: qs('#ep-align').value,
@@ -8295,83 +8559,6 @@ async function PdfTE_open(file){
   await buildThumbs();
   await renderCurrent();
 }
-
-
-/* ================================================================================
-   Edit PDF Text — route + tool registration
-   ================================================================================ */
-
-registerTool({
-  id: 'edit-pdf-text', name: 'Edit PDF Text', cat: 'edit', icon: 'file-pen-line', color: 'var(--c-edit)',
-  short: 'Edit existing text directly inside PDF documents without converting them into Word files',
-  desc: 'Opens a real text editor on your PDF: click any sentence to rewrite it while the original layout, fonts, colours and images stay untouched. Text is genuinely removed from the document (or background-redacted when a font cannot be matched) — nothing is faked with overlays.',
-  keywords: ['edit text', 'change text', 'replace text', 'rewrite', 'modify text', 'correct typo'],
-  multiple: false,
-  steps: ['Upload a text-based PDF', 'Click any text and rewrite it', 'Apply more edits, then download the edited PDF'],
-});
-
-async function renderEditPdf(){
-  const main = qs('#main');
-  main.innerHTML = `<div class="wrap">
-    <div class="crumbs"><a href="#/">Home</a> / <a href="#/c/edit">Edit &amp; Complete</a> / Edit PDF Text</div>
-    <div class="tool-head"><span class="ticon" style="background:var(--c-edit)">${ic('file-pen-line')}</span>
-      <div><h1>Edit PDF Text</h1>
-      <p>Modify existing text in your PDF directly while preserving the original document layout.</p></div></div>
-    <div class="privacy-note">${ic('shield-check')} <span><b>100% private.</b> The PDF never leaves this device — rendering, editing and export all run locally in your browser.</span></div>
-    <div class="tool-body">
-      <div class="main-col" id="edtMain"></div>
-      <div class="side-col" id="edtSide"></div>
-    </div></div>`;
-  const mainCol = qs('#edtMain'), sideCol = qs('#edtSide');
-
-  const upload = UploadZone({accept: 'application/pdf,.pdf', multiple: false,
-    checkFile: f => /\.pdf$/i.test(f.name) ? null : 'Please choose a PDF file (.pdf).',
-    label: 'Select a PDF to edit', hint: 'or drop it here', icon: 'file-pen-line'});
-  mainCol.appendChild(upload.el);
-  const info = el(`<div class="card pad" style="margin-top:16px">
-    <b style="font-size:14px">${ic('info')} How it works</b>
-    <ol style="margin:10px 0 0;padding-left:20px;font-size:13px;color:var(--text2);line-height:1.8">
-      <li>Pick a text-based PDF — pages render exactly as they look in any reader.</li>
-      <li>Hover highlights the editable text; click a line to open the edit panel.</li>
-      <li>Rewrite it (or delete it), press <b>Apply</b>, keep editing other lines or pages.</li>
-      <li><b>Download PDF</b> writes a real document: original text is removed from the file and your replacement is drawn in its place.</li>
-    </ol></div>`);
-  mainCol.appendChild(info);
-
-  const goCard = el(`<div class="card pad"><button class="btn primary big block" id="edtGo" disabled>${ic('pen')} Open editor</button>
-    <div class="hint" style="margin-top:10px">Everything runs on your device. Large PDFs may take a moment on first render.</div></div>`);
-  sideCol.appendChild(goCard);
-  const supp = el(`<div class="card pad"><b style="font-size:14px">${ic('shield-check')} Good to know</b>
-    <ul style="margin:10px 0 0;padding-left:18px;font-size:12.5px;color:var(--text2);line-height:1.8">
-      <li><b>Supported:</b> normal text PDFs, multi-page documents, embedded standard fonts.</li>
-      <li><b>Not supported:</b> scanned/image PDFs (no real text — use <a href="#/t/ocr-pdf">OCR PDF</a> first) and password-protected files (unlock first).</li>
-      <li><b>Fonts:</b> replacements use the closest match among Helvetica, Times and Courier; exotic embedded fonts fall back with a clear note.</li>
-      <li><b>Signed PDFs:</b> editable, but any change invalidates the digital signature.</li>
-    </ul></div>`);
-  sideCol.appendChild(supp);
-
-  const goBtn = qs('#edtGo');
-  upload.onChange = () => { goBtn.disabled = upload.files.length === 0; };
-  goBtn.onclick = async () => {
-    if(!upload.files.length) return;
-    try{
-      await upload.ensureBytes();
-      const entry = upload.files[0];
-      await PdfTE_open({name: entry.name, bytes: entry.bytes});
-    }catch(e){ toast('Could not open the PDF: ' + (e.message || e), 'err'); }
-  };
-  if(Chain.data){
-    const d = Chain.data;
-    Chain.data = null;
-    try{
-      const f = d.file || new File([U.blobOf(d.bytes, 'application/pdf')], d.name || 'document.pdf', {type: 'application/pdf'});
-      upload.add([f]);
-      toast('Loaded file from previous tool', 'ok');
-    }catch(e){}
-  }
-}
-
-Router.add(/^\/t\/edit-pdf-text$/, renderEditPdf);
 
 
 /* ================================================================================
