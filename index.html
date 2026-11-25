@@ -387,7 +387,9 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .ad-rail{position:fixed;right:16px;top:88px;z-index:30;display:none}
 .ad-rail .ad-slot{flex-direction:column}
 .ad-note{color:var(--text3)}
-@media(min-width:1700px){body.ads-on .ad-rail{display:block}}
+@media(max-width:860px){.ad-slot[data-skin="desktop"]{display:none}.ad-slot[data-skin="mobile"]{display:flex}}
+@media(min-width:861px){.ad-slot[data-skin="mobile"]{display:none}}
+@media(min-width:1950px){body.ads-on .ad-rail{display:block}}
 </style>
 </head>
 <body>
@@ -7364,20 +7366,22 @@ function renderHelp(){
    3) Paste the codes into the matching slot below, set enabled: true,
       save the file, and re-upload it to your host.
 
-   PLACEMENTS (non-intrusive by design):
-   • sidebar — 160×600 vertical banner, desktop wide screens only
-   • footer  — 728×90 horizontal banner above the footer
-   • result  — 300×250 square banner above the download list
+   CURRENT PLACEMENTS (non-intrusive by design, wired Nov 25, 2026):
+   • sidebar      — Native banner in the right rail, very wide screens (>=1950px)
+   • footer       — 728×90 banner above the footer on desktop (>=861px)
+   • footerMobile — 320×50 banner above the footer on phones/tablets (<=860px)
+   • result       — 300×250 banner above the download list after a tool completes
    Slots are rendered inside sandboxed iframes, so ad scripts cannot touch
-   the app or its files. With enabled: false nothing changes at all.
+   the app or its files. To swap a unit later: replace its html string below.
    ====================================================================== */
 const AD_CONFIG = {
-  enabled: false, // ← set to true after pasting your ad code below
+  enabled: true,  // ← LIVE since Nov 25, 2026 — Adsterra units wired below
   head: '',       // optional code that must run in the page itself,
                   // e.g. the Google AdSense loader <script src="..."><\/script>
-  sidebar: {html: '', w: 160, h: 600},
-  footer:  {html: '', w: 728, h: 90},
-  result:  {html: '', w: 300, h: 250},
+  sidebar:      {html: "<script async fetchpriority=\"high\" data-cfasync=\"false\" src=\"https://bauval.org/21/97632ccb518985647b91ad86d8487062\"><\/script>\n<div id=\"container-97632ccb518985647b91ad86d8487062\"></div>", w: 300, h: 320},  // Native banner — right rail, very wide screens
+  footer:       {html: "<script>\n  atOptions = {\n    'key' : '44dc72e4f6fcf02676d9a926c9a562a2',\n    'format' : 'iframe',\n    'height' : 90,\n    'width' : 728,\n    'params' : {}\n  };\n<\/script>\n<script data-cfasync=\"false\" src=\"https://bauval.org/22/44dc72e4f6fcf02676d9a926c9a562a2\"><\/script>", w: 728, h: 90, skin: 'desktop'},  // above footer, >=861px
+  footerMobile: {html: "<script>\n  atOptions = {\n    'key' : '0feb76493c2c2018cabba7a0a9813346',\n    'format' : 'iframe',\n    'height' : 50,\n    'width' : 320,\n    'params' : {}\n  };\n<\/script>\n<script data-cfasync=\"false\" src=\"https://bauval.org/22/0feb76493c2c2018cabba7a0a9813346\"><\/script>", w: 320, h: 50, skin: 'mobile'},   // above footer, <=860px
+  result:       {html: "<script>\n  atOptions = {\n    'key' : 'ae818c53042d690a4f2602197cd89c36',\n    'format' : 'iframe',\n    'height' : 250,\n    'width' : 300,\n    'params' : {}\n  };\n<\/script>\n<script data-cfasync=\"false\" src=\"https://bauval.org/22/ae818c53042d690a4f2602197cd89c36\"><\/script>", w: 300, h: 250},  // above the download list
 };
 
 function injectAdLive(el, html){
@@ -7415,6 +7419,7 @@ function adFrame(slotCfg){
   f.width = slotCfg.w || 300;
   f.height = slotCfg.h || 250;
   f.setAttribute('loading', 'lazy');
+  if(slotCfg.skin) f.dataset.skin = slotCfg.skin;
   f.srcdoc = '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<style>html,body{margin:0;padding:0;display:grid;place-items:center;background:transparent;overflow:hidden}</style>'
     + '</head><body>' + String(slotCfg.html) + '</body></html>';
@@ -7424,7 +7429,7 @@ function adFrame(slotCfg){
 
 const Ads = {
   mounted: false,
-  any(){ return !!(AD_CONFIG.head || AD_CONFIG.sidebar.html || AD_CONFIG.footer.html || AD_CONFIG.result.html); },
+  any(){ return !!(AD_CONFIG.head || AD_CONFIG.sidebar.html || AD_CONFIG.footer.html || AD_CONFIG.footerMobile.html || AD_CONFIG.result.html); },
   mount(){
     if(AD_CONFIG.enabled !== true || this.mounted || !this.any()) return;
     this.mounted = true;
@@ -7435,9 +7440,10 @@ const Ads = {
       injectAdLive(host, AD_CONFIG.head);
     }
     const foot = qs('footer.site');
-    if(foot && AD_CONFIG.footer.html){
+    if(foot && (AD_CONFIG.footer.html || AD_CONFIG.footerMobile.html)){
       const bar = el('<div class="ad-footerbar"></div>');
-      bar.appendChild(adFrame(AD_CONFIG.footer));
+      if(AD_CONFIG.footer.html) bar.appendChild(adFrame(AD_CONFIG.footer));
+      if(AD_CONFIG.footerMobile.html) bar.appendChild(adFrame(AD_CONFIG.footerMobile));
       const fb = foot.querySelector('.footer-bottom');
       if(fb) fb.before(bar); else foot.appendChild(bar);
     }
@@ -7472,9 +7478,9 @@ function renderAdsGuide(){
       <b>Google AdSense</b> — the best rates, but stricter review; apply once you have a custom domain and a privacy policy page (one is included with this app).<br>
       When creating ad units choose <b>Banner / display formats only</b>. Avoid popunders, social bar and interstitials — they annoy visitors.</p>
       <h3>3. Create the three banner sizes</h3>
-      <p>160×600 (sidebar) · 728×90 (footer) · 300×250 (above the download list). Copy each unit's HTML code.</p>
+      <p>This site runs four Adsterra units: a Native banner (wide-screen rail), 728×90 (footer, desktop), 320×50 (footer, mobile) and 300×250 (above the download list). Copy each unit's HTML code.</p>
       <h3>4. Paste the codes into the app</h3>
-      <p>Open <code>pdfree.html</code> in any text editor, search for <b>ADVERTISEMENTS — EDIT HERE</b> (near the top), paste each code into the matching <code>html: ''</code> field, set <code>enabled: true</code>, save, and re-upload the file to your host. If you are working with an assistant, you can simply send it the ad codes and have this done for you — never share your ad-network <i>password</i>, only the code snippet.</p>
+      <p>Open <code>pdfree.html</code> in any text editor, search for <b>ADVERTISEMENTS — EDIT HERE</b> (near the top), paste each code into the matching <code>html</code> field in <code>AD_CONFIG</code> (or replace an existing one), save, and push to the repo — GitHub Pages republishes automatically. If you are working with an assistant, you can simply send it the ad codes and have this done for you — never share your ad-network <i>password</i>, only the code snippet.</p>
       <h3>5. Watch earnings and withdraw</h3>
       <p>Log in to the network's publisher dashboard to see impressions, clicks and revenue. Add your payout method there (PayPal, bank transfer, crypto — depends on the network) and request withdrawal once you pass their minimum. That account stays entirely yours.</p>
       <h3>Notes</h3>

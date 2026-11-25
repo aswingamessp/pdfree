@@ -24,20 +24,20 @@ Edit or replace `index.html`, then push to `main` — GitHub Pages republishes a
 
 ## Earning from the site (advertising)
 
-The app contains a built-in, switched-off ad system with three non-intrusive banner slots:
+The app ships with a built-in ad system — four non-intrusive slots, currently **live with Adsterra**:
 
 | Slot | Banner size | Where it appears |
 | --- | --- | --- |
-| `sidebar` | 160×600 | Fixed right edge, wide desktop screens only (≥1700 px) |
-| `footer` | 728×90 | Above the footer, every page |
+| `sidebar` | Native banner | Right rail, very wide screens (≥1950 px) |
+| `footer` | 728×90 | Above the footer, desktop (≥861 px) |
+| `footerMobile` | 320×50 | Above the footer, phones and tablets (≤860 px) |
 | `result` | 300×250 | Above the download list after a tool completes |
 
-**Remaining steps to turn ads on:**
-
-1. In the **Adsterra dashboard → Websites**, add `https://aswingamessp.github.io/pdfree/` and wait for approval (usually quick).
-2. Under **Ad Units**, create **Banner** units in the three sizes above (never popup/popunder/social-bar formats — they disturb visitors).
-3. Copy each unit's HTML code and either paste it to your assistant in chat ("add these ads") or edit `index.html` yourself: find `ADVERTISEMENTS — EDIT HERE` near the top, paste each code into the matching `html: ''` field, set `enabled: true`, commit.
-4. Check the live site, then watch earnings in the Adsterra dashboard; payouts start at $5 depending on method and are sent automatically twice a month.
+**Ads are live (Nov 25, 2026).** The four Adsterra unit codes are wired into `index.html`
+(`AD_CONFIG`, `enabled: true`) and deployed to the live site. To swap or add a unit later:
+create it in the Adsterra dashboard, replace the matching `html` string in `AD_CONFIG`,
+commit — GitHub Pages republishes automatically. Keep banner/native formats only (never
+popup/popunder/social-bar — they disturb visitors and hurt the site).
 
 The banners render in sandboxed iframes — ad scripts cannot read the site or the files visitors process. With `enabled: false` (the current default) nothing changes: no slots, no requests, offline behavior identical.
 
