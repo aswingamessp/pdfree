@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDFree — Ad serving test</title>
+<style>
+  body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;margin:0;background:#f6f7fb;color:#1f2330}
+  .wrap{max-width:860px;margin:0 auto;padding:28px 16px 60px}
+  h1{font-size:26px;margin:0 0 6px}
+  .sub{color:#5b6172;margin:0 0 22px}
+  .card{background:#fff;border:1px solid #e3e6ef;border-radius:14px;padding:20px;margin:16px 0}
+  .label{font-weight:700;font-size:14px;margin:0 0 12px;color:#3b4256}
+  .box{min-height:110px;border:1px dashed #c9cfdf;border-radius:10px;display:grid;place-items:center;padding:10px;background:#fafbfe;overflow:hidden}
+  .status{margin-top:10px;font-size:14px;font-weight:600}
+  .wait{color:#8a90a3}.ok{color:#0f8a4d}.fail{color:#c0392b}
+  ol{color:#3b4256;font-size:14px;line-height:1.7;padding-left:20px;margin:8px 0 0}
+  code{background:#eef0f7;padding:1px 6px;border-radius:6px;font-size:13px}
+  .back{display:inline-block;margin-bottom:14px;color:#5b46d4;text-decoration:none;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="./">&larr; Back to PDFree</a>
+  <h1>Ad serving test</h1>
+  <p class="sub">This page loads two real Adsterra units directly (no sandboxing, no ad slots) to isolate the cause when banners don't appear on the main site.</p>
+
+  <div class="card">
+    <p class="label">Test 1 — 728×90 banner (direct, page-level)</p>
+    <div class="box" id="t728">
+<script>
+  atOptions = {
+    'key' : '44dc72e4f6fcf02676d9a926c9a562a2',
+    'format' : 'iframe',
+    'height' : 90,
+    'width' : 728,
+    'params' : {}
+  };
+</script>
+<script data-cfasync="false" src="https://bauval.org/22/44dc72e4f6fcf02676d9a926c9a562a2"></script>
+    </div>
+    <p class="status wait" id="s728">Waiting for the ad network… (up to 10 s)</p>
+  </div>
+
+  <div class="card">
+    <p class="label">Test 2 — Native banner (direct, page-level)</p>
+    <div class="box" id="tnat">
+<script async fetchpriority="high" data-cfasync="false" src="https://bauval.org/21/97632ccb518985647b91ad86d8487062"></script>
+<div id="container-97632ccb518985647b91ad86d8487062"></div>
+    </div>
+    <p class="status wait" id="snat">Waiting for the ad network… (up to 10 s)</p>
+  </div>
+
+  <div class="card">
+    <p class="label">If one or both boxes stay empty — the checklist</p>
+    <ol>
+      <li>Press <b>F12</b> → <b>Network</b> tab → type <code>bauval</code> in the filter → reload this page.
+        <ul>
+          <li>Request shows red <b>"blocked"</b> (by client / devtools) &rarr; an <b>adblocker</b> in your browser is blocking it. Disable the blocker for this site and reload — this is the most common cause.</li>
+          <li>Request shows <b>403</b> or fails &rarr; Adsterra is not serving yet. Check the Adsterra dashboard: <b>Websites &rarr; pdfree-one.vercel.app</b> must be <b>Active</b> (not "Under review"), and <b>Ad Units</b> must be active. New sites usually get reviewed within hours.</li>
+          <li>Request shows <b>200</b> but boxes empty &rarr; wait 1–2 hours; fresh units can be slow to first impression, and some geo locations get no fill.</li>
+        </ul>
+      </li>
+      <li>Ads never show to the person who owns the site in some setups — always test in a <b>private/incognito window</b> too.</li>
+      <li>Never click your own ads — that risks a permanent Adsterra ban.</li>
+    </ol>
+  </div>
+</div>
+<script>
+setTimeout(function(){
+  var f = document.querySelector('#t728 iframe');
+  var s7 = document.getElementById('s728');
+  s7.textContent = f ? '728×90 banner received ✓ — Adsterra IS serving. If the main site still shows nothing, the cause is on the main page (adblocker test or slot visibility).' : 'No banner received ✗ — Adsterra did not serve. Follow the checklist below (adblocker or site/unit approval).';
+  s7.className = 'status ' + (f ? 'ok' : 'fail');
+  var nat = document.getElementById('container-97632ccb518985647b91ad86d8487062');
+  var nChild = nat ? nat.children.length : 0;
+  var sn = document.getElementById('snat');
+  sn.textContent = nChild ? 'Native banner received ✓' : 'No native content received ✗ — same checklist applies.';
+  sn.className = 'status ' + (nChild ? 'ok' : 'fail');
+}, 10000);
+</script>
+</body>
+</html>

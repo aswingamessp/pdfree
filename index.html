@@ -383,6 +383,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .ad-slot iframe{border:0;background:transparent}
 .ad-result-zone{margin:12px 0 2px}
 .ad-result-zone:empty{display:none}
+.ad-home-slot{margin:18px 0 6px}
 .ad-footerbar{border-top:1px solid var(--border);background:var(--card);padding:10px 12px;display:flex;justify-content:center}
 .ad-rail{position:fixed;right:16px;top:88px;z-index:30;display:none}
 .ad-rail .ad-slot{flex-direction:column}
@@ -6969,6 +6970,7 @@ function renderHome(){
     <div class="grid-tools">${recent.map(t => toolCard(t)).join('')}</div>` : ''}
     <div class="sec-title"><h2>${ic('star')} Popular tools</h2><a href="#/tools">All tools ${ic('chev-right')}</a></div>
     <div class="grid-tools">${popular.map(t => toolCard(t)).join('')}</div>
+    <div id="home-ad" class="ad-home-slot"></div>
     <div class="sec-title"><h2>${ic('grid')} Categories</h2></div>
     <div class="grid-cats">${Object.keys(CATS).map(catCard).join('')}</div>
     <div class="sec-title"><h2>${ic('shield-check')} Why PDFree</h2></div>
@@ -6987,6 +6989,7 @@ function renderHome(){
       <a class="btn" href="#/about">Learn more ${ic('arrow-right')}</a>
     </div>
   </div>`;
+  Ads.fillHome(qs('#home-ad'));
   // home quick upload
   const uz = UploadZone({accept: 'application/pdf,.pdf', multiple: true, label: 'Drop a PDF here to get started', hint: 'and choose what to do with it', icon: 'file-text'});
   qs('#home-upload').appendChild(uz.el);
@@ -7367,7 +7370,7 @@ function renderHelp(){
       save the file, and re-upload it to your host.
 
    CURRENT PLACEMENTS (non-intrusive by design, wired Nov 25, 2026):
-   • sidebar      — Native banner in the right rail, very wide screens (>=1950px)
+   • home         — Native banner on the homepage, between Popular tools and Categories
    • footer       — 728×90 banner above the footer on desktop (>=861px)
    • footerMobile — 320×50 banner above the footer on phones/tablets (<=860px)
    • result       — 300×250 banner above the download list after a tool completes
@@ -7378,7 +7381,7 @@ const AD_CONFIG = {
   enabled: true,  // ← LIVE since Nov 25, 2026 — Adsterra units wired below
   head: '',       // optional code that must run in the page itself,
                   // e.g. the Google AdSense loader <script src="..."><\/script>
-  sidebar:      {html: "<script async fetchpriority=\"high\" data-cfasync=\"false\" src=\"https://bauval.org/21/97632ccb518985647b91ad86d8487062\"><\/script>\n<div id=\"container-97632ccb518985647b91ad86d8487062\"></div>", w: 300, h: 320},  // Native banner — right rail, very wide screens
+  home:         {html: "<script async fetchpriority=\"high\" data-cfasync=\"false\" src=\"https://bauval.org/21/97632ccb518985647b91ad86d8487062\"><\/script>\n<div id=\"container-97632ccb518985647b91ad86d8487062\"></div>", w: 940, h: 300},  // Native banner — homepage content slot, every screen
   footer:       {html: "<script>\n  atOptions = {\n    'key' : '44dc72e4f6fcf02676d9a926c9a562a2',\n    'format' : 'iframe',\n    'height' : 90,\n    'width' : 728,\n    'params' : {}\n  };\n<\/script>\n<script data-cfasync=\"false\" src=\"https://bauval.org/22/44dc72e4f6fcf02676d9a926c9a562a2\"><\/script>", w: 728, h: 90, skin: 'desktop'},  // above footer, >=861px
   footerMobile: {html: "<script>\n  atOptions = {\n    'key' : '0feb76493c2c2018cabba7a0a9813346',\n    'format' : 'iframe',\n    'height' : 50,\n    'width' : 320,\n    'params' : {}\n  };\n<\/script>\n<script data-cfasync=\"false\" src=\"https://bauval.org/22/0feb76493c2c2018cabba7a0a9813346\"><\/script>", w: 320, h: 50, skin: 'mobile'},   // above footer, <=860px
   result:       {html: "<script>\n  atOptions = {\n    'key' : 'ae818c53042d690a4f2602197cd89c36',\n    'format' : 'iframe',\n    'height' : 250,\n    'width' : 300,\n    'params' : {}\n  };\n<\/script>\n<script data-cfasync=\"false\" src=\"https://bauval.org/22/ae818c53042d690a4f2602197cd89c36\"><\/script>", w: 300, h: 250},  // above the download list
@@ -7429,7 +7432,7 @@ function adFrame(slotCfg){
 
 const Ads = {
   mounted: false,
-  any(){ return !!(AD_CONFIG.head || AD_CONFIG.sidebar.html || AD_CONFIG.footer.html || AD_CONFIG.footerMobile.html || AD_CONFIG.result.html); },
+  any(){ return !!(AD_CONFIG.head || AD_CONFIG.home.html || AD_CONFIG.footer.html || AD_CONFIG.footerMobile.html || AD_CONFIG.result.html); },
   mount(){
     if(AD_CONFIG.enabled !== true || this.mounted || !this.any()) return;
     this.mounted = true;
@@ -7447,17 +7450,15 @@ const Ads = {
       const fb = foot.querySelector('.footer-bottom');
       if(fb) fb.before(bar); else foot.appendChild(bar);
     }
-    if(AD_CONFIG.sidebar.html){
-      const rail = el('<div class="ad-rail" aria-hidden="true"></div>');
-      rail.appendChild(adFrame(AD_CONFIG.sidebar));
-      document.body.appendChild(rail);
-      document.body.classList.add('ads-on');
-    }
     const fb = qs('.footer-bottom');
     if(fb && !fb.dataset.adnote){
       fb.dataset.adnote = '1';
       fb.appendChild(el('<span class="ad-note">This site is supported by ads — your files still never leave this device.</span>'));
     }
+  },
+  fillHome(container){
+    if(AD_CONFIG.enabled !== true || !AD_CONFIG.home.html || !container) return;
+    container.appendChild(adFrame(AD_CONFIG.home));
   },
   fillResult(container){
     if(AD_CONFIG.enabled !== true || !AD_CONFIG.result.html || !container) return;
@@ -7478,7 +7479,7 @@ function renderAdsGuide(){
       <b>Google AdSense</b> — the best rates, but stricter review; apply once you have a custom domain and a privacy policy page (one is included with this app).<br>
       When creating ad units choose <b>Banner / display formats only</b>. Avoid popunders, social bar and interstitials — they annoy visitors.</p>
       <h3>3. Create the three banner sizes</h3>
-      <p>This site runs four Adsterra units: a Native banner (wide-screen rail), 728×90 (footer, desktop), 320×50 (footer, mobile) and 300×250 (above the download list). Copy each unit's HTML code.</p>
+      <p>This site runs four Adsterra units: a Native banner (homepage, below Popular tools), 728×90 (footer, desktop), 320×50 (footer, mobile) and 300×250 (above the download list). Copy each unit's HTML code.</p>
       <h3>4. Paste the codes into the app</h3>
       <p>Open <code>pdfree.html</code> in any text editor, search for <b>ADVERTISEMENTS — EDIT HERE</b> (near the top), paste each code into the matching <code>html</code> field in <code>AD_CONFIG</code> (or replace an existing one), save, and push to the repo — GitHub Pages republishes automatically. If you are working with an assistant, you can simply send it the ad codes and have this done for you — never share your ad-network <i>password</i>, only the code snippet.</p>
       <h3>5. Watch earnings and withdraw</h3>

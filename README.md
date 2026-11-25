@@ -28,7 +28,7 @@ The app ships with a built-in ad system — four non-intrusive slots, currently 
 
 | Slot | Banner size | Where it appears |
 | --- | --- | --- |
-| `sidebar` | Native banner | Right rail, very wide screens (≥1950 px) |
+| `home` | Native banner | Homepage, below Popular tools — visible to every visitor |
 | `footer` | 728×90 | Above the footer, desktop (≥861 px) |
 | `footerMobile` | 320×50 | Above the footer, phones and tablets (≤860 px) |
 | `result` | 300×250 | Above the download list after a tool completes |
