@@ -39,6 +39,6 @@ create it in the Adsterra dashboard, replace the matching `html` string in `AD_C
 commit — GitHub Pages republishes automatically. Keep banner/native formats only (never
 popup/popunder/social-bar — they disturb visitors and hurt the site).
 
-The banners render in sandboxed iframes — ad scripts cannot read the site or the files visitors process. With `enabled: false` (the current default) nothing changes: no slots, no requests, offline behavior identical.
+The banners render in per-unit iframes that keep multiple units from clashing (Adsterra requires non-sandboxed frames to serve; `ad-test.html` verifies serving anytime). With `enabled: false` nothing changes: no slots, no requests, offline behavior identical.
 
 > Security note: never put an Adsterra **API key** into `index.html` — it is a secret; only the public banner code belongs in the page. Ad networks' own ad code is safe to embed.

@@ -7374,8 +7374,9 @@ function renderHelp(){
    • footer       — 728×90 banner above the footer on desktop (>=861px)
    • footerMobile — 320×50 banner above the footer on phones/tablets (<=860px)
    • result       — 300×250 banner above the download list after a tool completes
-   Slots are rendered inside sandboxed iframes, so ad scripts cannot touch
-   the app or its files. To swap a unit later: replace its html string below.
+   Slots are rendered in per-unit iframes (no sandbox attribute — Adsterra
+   does not serve inside sandboxed frames). To swap a unit later: replace
+   its html string below.
    ====================================================================== */
 const AD_CONFIG = {
   enabled: true,  // ← LIVE since Nov 25, 2026 — Adsterra units wired below
@@ -7412,12 +7413,13 @@ function injectAdLive(el, html){
 }
 
 function adFrame(slotCfg){
-  /* render ad code inside a sandboxed iframe: isolates ad scripts from the
-     app AND supports document.write-style banner codes (Adsterra, Monetag…) */
+  /* render ad code inside its own same-origin iframe: keeps each unit's
+     globals (atOptions) separate on pages with several units. NOTE: no
+     sandbox attribute — Adsterra's loader does not serve inside sandboxed
+     frames (verified Nov 25, 2026: direct embedding served, sandboxed did not). */
   const frame = el('<div class="ad-slot"></div>');
   if(!slotCfg || !slotCfg.html || !String(slotCfg.html).trim()) return frame;
   const f = document.createElement('iframe');
-  f.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms');
   f.setAttribute('title', 'Advertisement');
   f.width = slotCfg.w || 300;
   f.height = slotCfg.h || 250;
